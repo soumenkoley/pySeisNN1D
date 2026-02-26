@@ -303,21 +303,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-# 
-
-# In[1]:
-
-
-import os
-print("OMP:", os.environ.get("OMP_NUM_THREADS"))
-print("MKL:", os.environ.get("MKL_NUM_THREADS"))
-print("OPENBLAS:", os.environ.get("OPENBLAS_NUM_THREADS"))
-os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["MKL_NUM_THREADS"] = "1"
-os.environ["OPENBLAS_NUM_THREADS"] = "1"
-print("OMP:", os.environ.get("OMP_NUM_THREADS"))
-print("MKL:", os.environ.get("MKL_NUM_THREADS"))
-print("OPENBLAS:", os.environ.get("OPENBLAS_NUM_THREADS"))
-
