@@ -9,7 +9,7 @@ from scipy.io import savemat
 from scipy.io import loadmat
 import scipy.constants as const
 from pysurf96 import surf96
-from modules import NNGeometry
+from modules import NNGeometryN
 from modules import simDisp
 from modules import plotUtils
 
