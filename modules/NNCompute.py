@@ -2,6 +2,7 @@
 # coding: utf-8
 
 import numpy as np
+import math
 import os
 from joblib import Parallel, delayed
 import matplotlib.pyplot as plt
@@ -87,7 +88,7 @@ def main():
     lenNewDepth = len(newDepths);
     #print(newDepths);
     for i in range(0,(lenNewDepth-1)):
-        layers.append(NNGeometry.Layer(xMin=xMin, xMax=xMax, yMin= yMin, yMax = yMax, zTop=newDepths[i], zBot=newDepths[i+1], vP=vp[i], vS=vs[i], rho=rho[i]));
+        layers.append(NNGeometryN.Layer(xMin=xMin, xMax=xMax, yMin= yMin, yMax = yMax, zTop=newDepths[i], zBot=newDepths[i+1], vP=vp[i], vS=vs[i], rho=rho[i]));
 
     print('Total number of layers = ' + str(len(layers)));
     nLayers = len(layers)
@@ -227,6 +228,36 @@ def main():
     axs[2].set_xlabel('Frequency (Hz)')
     axs[2].set_title('Z component');
 
+def assembleNNAllReaAllTM(outReaPath,freqOut, nRea, nTM):
+    """
+    to be run at the end of all realizations
+    compute the rms of surface and deep displacements
+    
+    """
+    nFreq = len(freqOut)
+    
+    nnTotAllRea = np.zeros((nFreq,3,nTM))
+    nnVolAllRea = np.zeros((nFreq,3,nTM))
+    nnSurfAllRea = np.zeros((nFreq,3,nTM))
+
+    for reaNo in range(0,nRea):
+        sName = 'NNFullRea' + str(reaNo) + '.npz'
+        data = np.load(os.path.join(outReaPath,sName));
+        nnTot = np.abs(data["ITot"])
+        nnVol = np.abs(data["IBlockTot"])
+        nnSurf = np.abs(data["IVertFaceTot"]+data['IHorFaceTot'])
+        nnTotAllRea = nnTotAllRea + nnTot**2
+        nnVolAllRea = nnVolAllRea + nnVol**2
+        nnSurfAllRea = nnSurfAllRea + nnSurf**2
+
+    nnTotAllRea = np.sqrt(nnTotAllRea/nRea)
+    nnVolAllRea = np.sqrt(nnVolAllRea/nRea)
+    nnSurfAllRea = np.sqrt(nnSurfAllRea/nRea)
+
+    freqOut = data["freqOut"]
+    
+    return nnTotAllRea, nnVolAllRea, nnSurfAllRea, freqOut  
+
 def assembleNNAllRea(outReaPath,freqOut, nRea):
     """
     to be run at the end of all realizations
@@ -257,14 +288,17 @@ def assembleNNAllRea(outReaPath,freqOut, nRea):
     
     return nnTotAllRea, nnVolAllRea, nnSurfAllRea, freqOut  
 
-def handleHorSurfNN(layer, layers, block, gridSize, nLayers, i, rhoAir, freqOut, cubeC, xSrc, ySrc, azSrc, srcMeta,
+def handleHorSurfNN(layer, layers, block, gridSize, nLayers, i, rhoAir, freqOut,
+                    allCavities, itmAC, xSrc, ySrc, azSrc, srcMeta,
                     idxFreq, fMin, fMax, outDispPath, splitAll, xMaxGF, fInpPath, components, vR, nCPUDisp=4,
                     nCPUNN=4, useSimDisp=False, ifRay = 0, ifBody = 0, vP_for_test=4000, vS_for_test = 2000,
-                    metaBody = None, chunk_size=20000, rCavity=20.0, computeStrategy="threading_shared",
+                    metaBody = None, chunk_size=20000, computeStrategy="threading_shared",
                     saveHV=False,reduceNN=True):
     
     nFreq = len(freqOut)
-    IHorFaceTot = np.zeros((nFreq,3),dtype=np.complex128)
+    itmAC = np.atleast_2d(itmAC)
+    nTM = len(itmAC)
+    IHorFaceTot = np.zeros((nFreq,3,nTM),dtype=np.complex128)
     internalFlag = 0
     for f in block.horizontalFaces:
         if f.isBoundary:
@@ -277,7 +311,9 @@ def handleHorSurfNN(layer, layers, block, gridSize, nLayers, i, rhoAir, freqOut,
                 if i == 0:
                     # Topmost layer → surface (air)
                     #print('I am in air')
-                    rho_eff = rhoAir
+                    #rho_eff = rhoAir
+                    # this needs to be switched on for free surface
+                    rho_eff = layer.rho
                     internalFlag = 0
                 else:
                     internalFlag = 1
@@ -301,12 +337,13 @@ def handleHorSurfNN(layer, layers, block, gridSize, nLayers, i, rhoAir, freqOut,
             # --- Compute the horizontal surface NN for the outer bottom ot top face ---
             #print('rho_eff = '+str(rho_eff))
             if(not internalFlag):
-                IHorFace = runHorSurfNNCompute(f, block.spaceType, gridSize, freqOut, cubeC, rho_eff, xSrc, ySrc,
-                                           azSrc, srcMeta, idxFreq, fMin, fMax, outDispPath, splitAll,
-                                           xMaxGF, fInpPath, components, vR, nCPUDisp=nCPUDisp, nCPUNN=nCPUNN,
-                                           useSimDisp=useSimDisp, ifRay = ifRay, ifBody = ifBody, vP_for_test = vP_for_test,
-                                           vS_for_test = vS_for_test, metaBody = metaBody, chunk_size=chunk_size,
-                                           rCavity=rCavity,computeStrategy=computeStrategy, saveHV=saveHV,reduceNN=reduceNN)
+                print('Actually computing NN for the horizontal surface')
+                IHorFace = runHorSurfNNCompute(f, block.spaceType, gridSize, freqOut, allCavities,
+                                               itmAC, rho_eff, xSrc, ySrc, azSrc, srcMeta, idxFreq, fMin, fMax, outDispPath, splitAll,
+                                               xMaxGF, fInpPath, components, vR, nCPUDisp=nCPUDisp, nCPUNN=nCPUNN,
+                                               useSimDisp=useSimDisp, ifRay = ifRay, ifBody = ifBody, vP_for_test = vP_for_test,
+                                               vS_for_test = vS_for_test, metaBody = metaBody, chunk_size=chunk_size,
+                                               computeStrategy=computeStrategy, saveHV=saveHV,reduceNN=reduceNN)
             
                 #
                 IHorFaceTot = IHorFaceTot + IHorFace
@@ -314,10 +351,11 @@ def handleHorSurfNN(layer, layers, block, gridSize, nLayers, i, rhoAir, freqOut,
     return IHorFaceTot
 
 
-def runHorSurfNNCompute(face, spaceType, gridSize, freqOut, cubeC, rho, xSrc, ySrc, azSrc, srcMeta, idxFreq, 
+def runHorSurfNNCompute(face, spaceType, gridSize, freqOut, allCavities,
+                        itmAC, rho, xSrc, ySrc, azSrc, srcMeta, idxFreq, 
                         fMin, fMax, outDispPath, splitAllNew, xMaxGF, fInpPath, components, vR, nCPUDisp=4, nCPUNN=4,
                         useSimDisp=False, ifRay = 0, ifBody = 0, vP_for_test = 4000, vS_for_test = 2000, metaBody = None,
-                        chunk_size=20000, rCavity=20, computeStrategy="threading_shared",saveHV=False, reduceNN=True):
+                        chunk_size=20000, computeStrategy="threading_shared",saveHV=False, reduceNN=True):
     """
     Compute NN from ONE horizontal interface (z = const), parallel over (x,y).
 
@@ -340,30 +378,34 @@ def runHorSurfNNCompute(face, spaceType, gridSize, freqOut, cubeC, rho, xSrc, yS
         gridX, gridXW = lgwtPoints(nX, face.xLim[0], face.xLim[1])
         gridY, gridYW = lgwtPoints(nY, face.yLim[0], face.yLim[1])
         #zlgwt = -np.abs(zlgwt)
+
+        X, Y = np.meshgrid(gridX, gridY, indexing="ij")
+        WX, WY = np.meshgrid(gridXW, gridYW, indexing="ij")
+
+        X_flat = X.ravel()
+        Y_flat = Y.ravel()
+        dS = (WX * WY).ravel()    # area weights
     else:
         print('Uniform spacing')
         # the case of the block enclosing the cavity, no lgwt sampliing here
-        # uniform sampling to be done here
-        gridX, gridXW = make_centered_axis(face.xLim[0], face.xLim[1], 1.0, min_pts = 3)
-        gridY, gridYW = make_centered_axis(face.yLim[0], face.yLim[1], 1.0, min_pts = 3)
+        # adaptive uniform sampling to be done here
+        
+        xy_result = generate_adaptive_xy_pointcloud(cavities=allCavities,x_min=face.xMin,x_max=face.xMax,
+                                                    y_min=face.yMin, y_max=face.yMax, dx_inside=1.0,
+                                                    dy_inside=1.0, dx_near=1.0, dy_near=1.0, dx_mid=2.0,
+                                                    dy_mid=2.0, dx_far=5.0, dy_far=5.0, near_frac=1.0/3.0, mid_frac=2.0/3.0,
+                                                    near_cap=20.0, mid_cap=20.0, gap_tol=10.0)
+        
+        X_flat = xy_result["gridX_flat"]
+        Y_flat = xy_result["gridY_flat"]
+        dS = xy_result["gridW_flat"]
     
-    # build 2D grid
-    X, Y = np.meshgrid(gridX, gridY, indexing="ij")
-    WX, WY = np.meshgrid(gridXW, gridYW, indexing="ij")
-
-    X_flat = X.ravel()
-    Y_flat = Y.ravel()
-    dS = (WX * WY).ravel()    # area weights
-    # use -zFace
     zArr = np.full_like(X_flat, zFaceNeg, dtype=float)
 
-    # cavity depth must be made negative for coordinate convention
-    zCav = -(cubeC)
-    
     # remove cavity footprint if this horizontal plane cuts it
-    if spaceType == 'uniform' and rCavity is not None:
-        rDist = np.sqrt(X_flat**2 + Y_flat**2 + (zFaceNeg - zCav)**2)
-        mask = rDist >= rCavity
+    if spaceType == 'uniform':
+
+        mask = mask_points_outside_all_cavities(X_flat, Y_flat, zFaceNeg, allCavities)
         X_flat = X_flat[mask]
         Y_flat = Y_flat[mask]
         zArr   = zArr[mask]
@@ -371,22 +413,22 @@ def runHorSurfNNCompute(face, spaceType, gridSize, freqOut, cubeC, rho, xSrc, yS
 
     # final coords
     rVec = np.column_stack((X_flat, Y_flat, zArr))   # (nPts, 3)
-    nPts = rVec.shape[0]
-    nFreq = len(freqOut)
+    #nPts = rVec.shape[0]
+    #nFreq = len(freqOut)
 
     # get displacements
     if useSimDisp:
         # expected: (nFreq, nPts, 3)
         # note that zArr negative here, careful
         zUse = -zFaceNeg
-        nnMeta = {"rVec": rVec,"dS": dS,"zCav": zCav,"n_hat": face.normVector}
+        nnMeta = {"rVec": rVec,"dS": dS,"n_hat": face.normVector}
         if(reduceNN):
-            I_total, _, _, _ = simDisp.computeFullDispF(zUse,rVec[:, 0], rVec[:, 1],xSrc, ySrc, azSrc, srcMeta,
+            I_total, _, _, _ = simDisp.computeFullDispF(zUse,rVec[:, 0], rVec[:, 1], itmAC, xSrc, ySrc, azSrc, srcMeta,
                                                        idxFreq, freqOut, outDispPath,splitAllNew,xMaxGF,
                                                        fInpPath,nCPU=nCPUDisp, nChunk=chunk_size,computeStrategy=computeStrategy,
                                                        saveHV=saveHV,reduceNN=reduceNN,nnMode="hor_surface",nnMeta=nnMeta)
         else:
-            dispData, outDirUse, fUse, shmPaths = simDisp.computeFullDispF(zUse,rVec[:, 0], rVec[:, 1],xSrc, ySrc, azSrc, srcMeta,
+            dispData, outDirUse, fUse, shmPaths = simDisp.computeFullDispF(zUse,rVec[:, 0], rVec[:, 1], itmAC, xSrc, ySrc, azSrc, srcMeta,
                                                        idxFreq, freqOut, outDispPath,splitAllNew,xMaxGF,
                                                        fInpPath,nCPU=nCPUDisp, nChunk=chunk_size,computeStrategy=computeStrategy,
                                                        saveHV=saveHV,reduceNN=reduceNN,nnMode="hor_surface",nnMeta=nnMeta)
@@ -400,7 +442,7 @@ def runHorSurfNNCompute(face, spaceType, gridSize, freqOut, cubeC, rho, xSrc, yS
                                                 phiSrc, ampSrc, vR, vP_for_test, vS_for_test) 
             shmPaths = None
             n_hat = face.normVector
-            I_total = compute_surface_parallel(dispData, rVec, zCav, dS, n_hat, n_jobs=nCPUNN, chunk_size=chunk_size)
+            I_total = compute_surface_parallel(dispData, rVec, itmAC, dS, n_hat, n_jobs=nCPUNN, chunk_size=chunk_size)
 
         elif(ifBody):
             nSrc = len(azSrc)
@@ -410,25 +452,25 @@ def runHorSurfNNCompute(face, spaceType, gridSize, freqOut, cubeC, rho, xSrc, yS
                                                             vP_for_test, vS_for_test, metaBody,n_workers=nCPUDisp)
             shmPaths = None
             n_hat = face.normVector
-            I_total = compute_surface_parallel(dispData, rVec, zCav, dS, n_hat, n_jobs=nCPUNN, chunk_size=chunk_size)
+            I_total = compute_surface_parallel(dispData, rVec, itmAC, dS, n_hat, n_jobs=nCPUNN, chunk_size=chunk_size)
     
     if(not reduceNN):
         n_hat = face.normVector
         #print(n_hat)
         # run parallel surface integration
         #print("I am computing surface parallel")
-        I_total = compute_surface_parallel(dispData, rVec, zCav, dS, n_hat, n_jobs=nCPUNN, chunk_size=chunk_size)
+        I_total = compute_surface_parallel(dispData, rVec, itmAC, dS, n_hat, n_jobs=nCPUNN, chunk_size=chunk_size)
 
     I_total = I_total*rho
 
     # delete the displacements stored
     if(not reduceNN):
         del dispData
-        simDisp.cleanup_sharedmem(shmPaths)
-    
+        if shmPaths is not None:
+            simDisp.cleanup_sharedmem(shmPaths)    
     return I_total
     
-def compute_surface_parallel(dispData, rVec, zCav, dS, n_hat, n_jobs=4, chunk_size=20000):
+def compute_surface_parallel(dispData, rVec, itmAC, dS, n_hat, n_jobs=4, chunk_size=20000):
     """
     Parallel surface NN over a horizontal face.
 
@@ -440,13 +482,15 @@ def compute_surface_parallel(dispData, rVec, zCav, dS, n_hat, n_jobs=4, chunk_si
     n_hat    : (3,)
     """
     nFreq, nPts, _ = dispData.shape
-    I_total = np.zeros((nFreq, 3), dtype=np.complex128)
+    itmAC = np.atleast_2d(itmAC)
+    nTM = len(itmAC[:,0])
+    I_total = np.zeros((nFreq, 3, nTM), dtype=np.complex128)
 
     def process_chunk(start, end):
         u_chunk = dispData[:, start:end, :]
         r_chunk = rVec[start:end, :]
         dS_chunk = dS[start:end]
-        return computeVertSurfNN(u_chunk, r_chunk, zCav, n_hat, dS_chunk)
+        return computeVertSurfNN_multiTM(u_chunk, r_chunk, n_hat, dS_chunk, itmAC)
 
     starts = list(range(0, nPts, chunk_size))
 
@@ -461,7 +505,7 @@ def compute_surface_parallel(dispData, rVec, zCav, dS, n_hat, n_jobs=4, chunk_si
     
     return I_total
     
-def runVertSurfNNCompute(face, gridSize, freqOut, cubeC, xSrc, ySrc, azSrc, srcMeta, idxFreq, fMin, fMax,
+def runVertSurfNNCompute(face, gridSize, freqOut, itmAC, xSrc, ySrc, azSrc, srcMeta, idxFreq, fMin, fMax,
                          outDispPath, splitAllNew, xMaxGF, fInpPath, components, vR, nCPUDisp=4, nChunk=20000,
                          useSimDisp=False, ifRay = 0, ifBody = 0, vP_for_test=None, vS_for_test = None,
                          metaBody=None, computeStrategy="threading_shared",saveHV=False, reduceNN=True):
@@ -471,7 +515,9 @@ def runVertSurfNNCompute(face, gridSize, freqOut, cubeC, xSrc, ySrc, azSrc, srcM
     face.axis == 'y'  -> fixed y, vary x,z
     """
     nFreq = len(freqOut)
-    I_total = np.zeros((nFreq, 3), dtype=np.complex128)
+    itmAC = np.atleast_2d(itmAC)
+    nTM = len(itmAC[:,0])
+    I_total = np.zeros((nFreq, 3, nTM), dtype=np.complex128)
 
     if(face.axis=='x'):
         totY = face.yLim[1]-face.yLim[0]
@@ -501,7 +547,6 @@ def runVertSurfNNCompute(face, gridSize, freqOut, cubeC, xSrc, ySrc, azSrc, srcM
 
     # switch sign here, because NN geometry returns depth as positive
     zlgwt = -np.abs(zlgwt)
-    zCav = -(cubeC)  # ensure cavity depth is negative
     
     for iz, (zNow, wz) in enumerate(zip(zlgwt, zWeightlgwt)):
         # build coords for THIS depth only
@@ -528,15 +573,15 @@ def runVertSurfNNCompute(face, gridSize, freqOut, cubeC, xSrc, ySrc, azSrc, srcM
         if useSimDisp:
             # be carefull here zNow is negative
             zUse = -zNow
-            nnMeta = {"rVec": rVec,"dS": dS,"zCav": zCav,"n_hat": face.normVector}
+            nnMeta = {"rVec": rVec,"dS": dS,"n_hat": face.normVector}
             if(reduceNN):
-                I_slice, _, _, _ = simDisp.computeFullDispF(zUse,rVec[:, 0], rVec[:, 1],xSrc, ySrc,
+                I_slice, _, _, _ = simDisp.computeFullDispF(zUse,rVec[:, 0], rVec[:, 1], itmAC, xSrc, ySrc,
                                                             azSrc, srcMeta, idxFreq, freqOut, outDispPath,
                                                             splitAllNew, xMaxGF, fInpPath, nCPU=nCPUDisp, nChunk=nChunk,
                                                             computeStrategy=computeStrategy, saveHV=False,reduceNN=True,
                                                             nnMode="vert_surface",nnMeta=nnMeta)
             else:
-                disp_f, outDirUse, fUse, shmPaths = simDisp.computeFullDispF(zUse,rVec[:, 0], rVec[:, 1],xSrc, ySrc,
+                disp_f, outDirUse, fUse, shmPaths = simDisp.computeFullDispF(zUse,rVec[:, 0], rVec[:, 1], itmAC, xSrc, ySrc,
                                                             azSrc, srcMeta, idxFreq, freqOut, outDispPath,
                                                             splitAllNew, xMaxGF, fInpPath, nCPU=nCPUDisp, nChunk=nChunk,
                                                             computeStrategy=computeStrategy, saveHV=saveHV,reduceNN=True,
@@ -551,7 +596,7 @@ def runVertSurfNNCompute(face, gridSize, freqOut, cubeC, xSrc, ySrc, azSrc, srcM
                 disp_f = simDisp.computeRayleighDisp(zNow, rVec[:,0], rVec[:,1], nSrc, freqOut, azSrc,
                                                 phiSrc, ampSrc, vR, vP_for_test, vS_for_test)
                 shmPaths = None
-                I_slice = computeVertSurfNN(disp_fxn=disp_f, rVec=rVec, zCav=zCav, n_hat=face.normVector, dS=dS)
+                I_slice = computeVertSurfNN_multiTM(disp_fxn=disp_f, rVec=rVec, n_hat=face.normVector, dS=dS, itmAC=itmAC)
             elif(ifBody):
                 nSrc = len(azSrc)
                 #disp_f = simDisp.computeFullBodyDisp(zNow, rVec[:,0], rVec[:,1], nSrc, freqOut, vP_for_test,
@@ -559,20 +604,21 @@ def runVertSurfNNCompute(face, gridSize, freqOut, cubeC, xSrc, ySrc, azSrc, srcM
                 disp_f = simDisp.computeFullBodyDisp_parallel(zNow, rVec[:,0], rVec[:,1], nSrc, freqOut, vP_for_test,
                                                               vS_for_test, metaBody,n_workers=nCPUDisp)
                 shmPaths = None
-                I_slice = computeVertSurfNN(disp_fxn=disp_f, rVec=rVec, zCav=zCav, n_hat=face.normVector, dS=dS)
+                I_slice = computeVertSurfNN_multiTM(disp_fxn=disp_f, rVec=rVec, n_hat=face.normVector, dS=dS, itmAC = itmAC)
         # now do the surface kernel for ALL freqs
         if(not reduceNN):
-            I_slice = computeVertSurfNN(disp_fxn=disp_f, rVec=rVec, zCav=zCav, n_hat=face.normVector, dS=dS)
+            I_slice = computeVertSurfNN_multiTM(disp_fxn=disp_f, rVec=rVec, n_hat=face.normVector, dS=dS, itmAC=itmAC)
         # add with density
         I_total += face.rhoOut * I_slice
 
         if(not reduceNN):
             del disp_f
-            simDisp.cleanup_sharedmem(shmPaths)
+            if shmPaths is not None:
+                simDisp.cleanup_sharedmem(shmPaths)
 
     return I_total
 
-def computeVertSurfNN(disp_fxn, rVec, zCav, n_hat, dS):
+def computeVertSurfNN(disp_fxn, rVec, zCav, n_hat, dS, itmAC):
     """
     disp_fxn : (nFreq, nPts, 3)  complex
         displacement on the surface
@@ -594,8 +640,13 @@ def computeVertSurfNN(disp_fxn, rVec, zCav, n_hat, dS):
 
     # shift to cavity
     rRel = rVec.copy()
-    rRel[:, 2] = rRel[:, 2] - zCav  # z - z_cav
+    # old version
+    #rRel[:, 2] = rRel[:, 2] - zCav  # z - z_cav
 
+    rRel[:, 0] = rRel[:, 0] -itmAC[0]
+    rRel[:, 1] = rRel[:, 1] -itmAC[1]
+    rRel[:, 2] = rRel[:, 2] -itmAC[2]
+    
     # |r| and r/|r|^3
     rnorm = np.linalg.norm(rRel, axis=1)          # (nPts,)
     rnorm3 = rnorm**3                             # (nPts,)
@@ -618,8 +669,89 @@ def computeVertSurfNN(disp_fxn, rVec, zCav, n_hat, dS):
     I_surf = I_pt.sum(axis=1)                              # (nFreq, 3)
 
     return I_surf
-    
-def runVolNNComputeBlock(block, gridSize, freqOut, cubeC, rCavity, xSrc, ySrc, azSrc, srcMeta,
+
+def computeVertSurfNN_multiTM(disp_fxn, rVec, n_hat, dS, itmAC):
+    """
+    Compute vertical/side surface NN contribution for one or more test masses.
+
+    Parameters
+    ----------
+    disp_fxn : ndarray, shape (nFreq, nPts, 3)
+        Displacement on the surface.
+
+    rVec : ndarray, shape (nPts, 3)
+        Coordinates of surface points in global/code coordinates.
+
+    zCav : float
+        Kept for backward compatibility. Not used here if itmAC gives full coordinates.
+
+    n_hat : ndarray, shape (3,)
+        Outward normal of the surface.
+
+    dS : ndarray, shape (nPts,)
+        Surface area weights per point.
+
+    itmAC : ndarray, shape (3,) or (nTM, 3)
+        Test-mass coordinates in the same coordinate system as rVec.
+
+    eps : float
+        Small cutoff to avoid division by zero if a surface point lies exactly on a test mass.
+
+    Returns
+    -------
+    I_surf : ndarray, shape (nFreq, 3, nTM)
+        Surface NN contribution for each test mass.
+    """
+
+    disp_fxn = np.asarray(disp_fxn)
+    rVec = np.asarray(rVec, dtype=float)
+    n_hat = np.asarray(n_hat, dtype=float)
+    dS = np.asarray(dS, dtype=float)
+
+    itmAC = np.asarray(itmAC, dtype=float)
+
+    # Allow old single-test-mass input shape (3,)
+    if itmAC.ndim == 1:
+        itmAC = itmAC[None, :]   # (1, 3)
+
+    #nFreq, nPts, _ = disp_fxn.shape
+    #nTM = itmAC.shape[0]
+
+    # Relative vectors:
+    # rRel[m, p, :] = rVec[p, :] - itmAC[m, :]
+    rRel = rVec[None, :, :] - itmAC[:, None, :]      # (nTM, nPts, 3)
+
+    rnorm = np.linalg.norm(rRel, axis=2)             # (nTM, nPts)
+
+    # Avoid divide-by-zero. Surface points should not coincide with test masses.
+
+    rnorm3 = rnorm**3                                # (nTM, nPts)
+
+    # u dot n is independent of test mass:
+    # disp_fxn: (nFreq, nPts, 3)
+    # n_hat:    (3,)
+    u_dot_n = np.einsum("fpk,k->fp", disp_fxn, n_hat)   # (nFreq, nPts)
+
+    # Broadcast to (nFreq, nTM, nPts, 1)
+    scalar = (
+        u_dot_n[:, None, :, None] /
+        rnorm3[None, :, :, None]
+    )                                                  # (nFreq, nTM, nPts, 1)
+
+    I_pt = scalar * rRel[None, :, :, :]                # (nFreq, nTM, nPts, 3)
+
+    # Apply surface weights
+    I_pt *= dS[None, None, :, None]                    # (nFreq, nTM, nPts, 3)
+
+    # Sum over surface points
+    I_sum = I_pt.sum(axis=2)                           # (nFreq, nTM, 3)
+
+    # Return as (nFreq, 3, nTM), same as volume multiTM
+    I_surf = np.transpose(I_sum, (0, 2, 1))
+
+    return I_surf
+  
+def runVolNNComputeBlock(block, gridSize, freqOut, allCavities, itmAC, xSrc, ySrc, azSrc, srcMeta,
                          idxFreq, fMin, fMax, outDispPath, splitAllNew, xMaxGF, fInpPath, components, vR, 
                          useSimDisp=False, ifRay = 0, ifBody = 0, nCPUDisp=4, nCPUNN=4, nChunk=20000,
                          metaBody=None, computeStrategy = 'threading_shared', saveHV = False, reduceNN=True):
@@ -628,7 +760,7 @@ def runVolNNComputeBlock(block, gridSize, freqOut, cubeC, rCavity, xSrc, ySrc, a
     
     Parameters
     ----------
-    block : NNGeometry.Block
+    block : NNGeometryN.Block
         Current block object (contains x/y/z bounds, rho, vP, etc.)
     gridX, gridY : 1D arrays
         Quadrature or uniform grid coordinates in X and Y.
@@ -649,7 +781,12 @@ def runVolNNComputeBlock(block, gridSize, freqOut, cubeC, rCavity, xSrc, ySrc, a
     """
 
     nFreq = len(freqOut)
-    I_total = np.zeros((nFreq, 3), dtype=np.complex128)
+    # new version
+    itmAC = np.atleast_2d(itmAC)
+    nTM = len(itmAC[:,0])
+    I_total = np.zeros((nFreq, 3, nTM), dtype=np.complex128)
+    # old version
+    #I_total = np.zeros((nFreq, 3), dtype=np.complex128)
 
     if(block.spaceType == 'lgwt'):
         #print('I am here!')
@@ -664,27 +801,51 @@ def runVolNNComputeBlock(block, gridSize, freqOut, cubeC, rCavity, xSrc, ySrc, a
         gridX, gridXW = lgwtPoints(nX, block.xMin, block.xMax)
         gridY, gridYW = lgwtPoints(nY, block.yMin, block.yMax)
         zlgwt, zWeightlgwt = lgwtPoints(nZ, block.zMin, block.zMax)
+        # new update
+        gridXMat, gridYMat = np.meshgrid(gridX, gridY, indexing='ij')
+        gridXWMat, gridYWMat = np.meshgrid(gridXW, gridYW, indexing='ij')
+        gridX_flat = gridXMat.ravel()
+        gridY_flat = gridYMat.ravel()
+        gridW_flat = (gridXWMat * gridYWMat).ravel()
         #zlgwt = -np.abs(zlgwt)
     else:
         print('Uniform spacing')
         # the case of the block enclosing the cavity, no lgwt sampliing here
-        # uniform sampling to be done here
+        # adpative uniform sampling to be done here
+        # new version, the az calculation still needs to happen
+        cubeTopAll = np.zeros((len(allCavities),))
+        cubeBotAll = np.zeros((len(allCavities),))
+        for cavNo, cav in enumerate(allCavities):
+            if(cav["shape"]=="cuboid"):
+                hBuf = cav["height"]/2  #aangepast
+                cubeTopAll[cavNo] = cav["zC"] - hBuf; cubeBotAll[cavNo] = cav["zC"] + hBuf
+            elif(cav["shape"] == 'sphere'):
+                hBuf = cav["radius"]
+                cubeTopAll[cavNo] = cav["zC"] -hBuf ; cubeBotAll[cavNo] = cav["zC"] + hBuf
+            else:
+                ValueError('Unsupported cavity type')
 
-        gridX, gridXW = make_centered_axis(block.xMin, block.xMax, 1.0, min_pts = 3)
-        gridY, gridYW = make_centered_axis(block.yMin, block.yMax, 1.0, min_pts = 3)
-        zlgwt, zWeightlgwt = make_centered_axis(block.zMin, block.zMax, 1.0, min_pts = 3)
-    
-    # --- Construct full horizontal grid ---
-    gridXMat, gridYMat = np.meshgrid(gridX, gridY, indexing='ij')
-    gridXWMat, gridYWMat = np.meshgrid(gridXW, gridYW, indexing='ij')
-    gridX_flat = gridXMat.ravel()
-    gridY_flat = gridYMat.ravel()
-    gridW_flat = (gridXWMat * gridYWMat).ravel()
+        # compute max and min to get global cubeTop and cubeBot
+        cav_zmin = min(cubeTopAll); cav_zmax = max(cubeBotAll)
+        
+        xy_result = generate_adaptive_xy_pointcloud(cavities=allCavities,x_min=block.xMin,x_max=block.xMax,
+                                                    y_min=block.yMin, y_max=block.yMax, dx_inside=1.0,
+                                                    dy_inside=1.0, dx_near=1.0, dy_near=1.0, dx_mid=2.0,
+                                                    dy_mid=2.0, dx_far=5.0, dy_far=5.0, near_frac=1.0/3.0, mid_frac=2.0/3.0,
+                                                    near_cap=20.0, mid_cap=20.0, gap_tol=10.0)
+        
+        zlgwt, zWeightlgwt = make_adaptive_z_axis(block.zMin,block.zMax, cav_zmin, cav_zmax, dz_inside=1.0, dz_near=1.0, dz_mid=2.0,
+                         dz_far=5.0, near_width=20.0, mid_width=20.0)
+        
+        gridX_flat = xy_result["gridX_flat"]
+        gridY_flat = xy_result["gridY_flat"]
+        gridW_flat = xy_result["gridW_flat"]
+        
+        print("Total points =", len(gridX_flat))
 
     # --- Flip z to negative (depths below surface) ---
     zlgwt = -np.abs(zlgwt)
-    zCav = -(cubeC)  # ensure cavity depth is negative
-
+    
     # --- Loop over depth slices ---
     for d in range(len(zlgwt)):
         zNow = zlgwt[d]
@@ -700,33 +861,34 @@ def runVolNNComputeBlock(block, gridSize, freqOut, cubeC, rCavity, xSrc, ySrc, a
         # CAVITY REMOVAL
         # ============================================================
         # Apply only to the block containing the cavity (uniform grid)
-        if block.spaceType == 'uniform':
-            # compute distance from cavity center
-            rDist = np.sqrt(gridX_flat**2 + gridY_flat**2 + (zNow - zCav)**2)
-            mask = rDist >= rCavity  # keep only points OUTSIDE cavity
 
+        #Jasper commented out rDist, mask
+        #replaced by: if cavitytype == sphere, cuboid
+
+        if block.spaceType == 'uniform':
+            # new version
+            mask = mask_points_outside_all_cavities(gridX_flat, gridY_flat, zNow, allCavities)
             # apply mask to geometry and weights
             rVec = rVec[mask, :]
             dV = dV[mask]
             if len(rVec) == 0:
                 print(f"[WARNING] All points removed at z={zNow:.2f} in cavity block — skipping this slice.")
                 continue
-        # ============================================================
 
         # --- Generate or read displacements ---
         if useSimDisp:
             # TODO: memory-mapped read from file (later)
             # be careful here zNow is negative
             zUse = -zNow
-            nnMeta = {"rVec": rVec, "dV": dV, "zCav": zCav, "rho": block.rho}
+            nnMeta = {"rVec": rVec, "dV": dV, "rho": block.rho}
             #print('Started disp computation at depth ' + str(zUse))
             if(reduceNN):
-                IDepthSlice,_,_,_ = simDisp.computeFullDispF(zUse, rVec[:,0], rVec[:,1], xSrc, ySrc, azSrc, srcMeta,
+                IDepthSlice,_,_,_ = simDisp.computeFullDispF(zUse, rVec[:,0], rVec[:,1], itmAC, xSrc, ySrc, azSrc, srcMeta,
                     idxFreq, freqOut, outDispPath, splitAllNew, xMaxGF, fInpPath, nCPU=nCPUDisp, nChunk=nChunk,
                     computeStrategy=computeStrategy,saveHV=saveHV, reduceNN=reduceNN, nnMode="volume", nnMeta=nnMeta)    
                 I_total += IDepthSlice
             else:
-                dispData, outDirUse, fUse, shmPaths = simDisp.computeFullDispF(zUse, rVec[:,0], rVec[:,1], xSrc, ySrc, azSrc, srcMeta,
+                dispData, outDirUse, fUse, shmPaths = simDisp.computeFullDispF(zUse, rVec[:,0], rVec[:,1], itmAC, xSrc, ySrc, azSrc, srcMeta,
                     idxFreq, freqOut, outDispPath, splitAllNew, xMaxGF, fInpPath, nCPU=nCPUDisp, nChunk=nChunk,
                     computeStrategy=computeStrategy,saveHV=saveHV, reduceNN=reduceNN, nnMode="volume", nnMeta=nnMeta)
             #print('Ended disp computation at depth ' + str(zUse))
@@ -739,37 +901,47 @@ def runVolNNComputeBlock(block, gridSize, freqOut, cubeC, rCavity, xSrc, ySrc, a
                 nSrc = len(azSrc)
                 dispData = simDisp.computeRayleighDisp(zNow, rVec[:,0], rVec[:,1], nSrc, freqOut, azSrc,
                                                 phiSrc, ampSrc, vR, block.vP, block.vS)
-                I_total += compute_volume_parallel(dispData, rVec, zCav, block.rho, dV, n_jobs=nCPUNN)
+                I_total += compute_volume_parallel(dispData, rVec, itmAC, block.rho, dV, n_jobs=nCPUNN)
                 shmPaths = None
             elif(ifBody):
                 nSrc = len(azSrc)
-                #dispData = simDisp.computeFullBodyDisp(zNow, rVec[:,0], rVec[:,1], nSrc, freqOut,
-                #                                       block.vP, block.vS, metaBody)
+                
                 dispData = simDisp.computeFullBodyDisp_parallel(zNow, rVec[:,0], rVec[:,1], nSrc, freqOut,
                                                                 block.vP, block.vS, metaBody,n_workers=nCPUDisp)
-                I_total += compute_volume_parallel(dispData, rVec, zCav, block.rho, dV, n_jobs=nCPUNN)
+                I_total += compute_volume_parallel(dispData, rVec, itmAC, block.rho, dV, n_jobs=nCPUNN)
                 shmPaths = None
             else:
                 raise ValueError("ifRay and ifBody can't be set to 0 when useQseis=False")
 
         # --- Volume integral for this depth slice ---
         if(not reduceNN):
-            I_total += compute_volume_parallel(dispData, rVec, zCav, block.rho, dV, n_jobs=nCPUNN)
+            I_total += compute_volume_parallel(dispData, rVec, itmAC, block.rho, dV, n_jobs=nCPUNN)
             #print("grid points = " + str(len(rVec)));
             del dispData
-            simDisp.cleanup_sharedmem(shmPaths)
+            if shmPaths is not None:
+                simDisp.cleanup_sharedmem(shmPaths)
 
     return I_total
  
-def compute_volume_parallel(dispData, rVec, zCav, rho, dV, n_jobs=4, chunk_size=20000):
+def compute_volume_parallel(dispData, rVec, itmAC, rho, dV, n_jobs=4, chunk_size=20000):
     """
     Parallel computation of volume NN contribution using joblib.
     dispData: (nFreq, nGrid, nComp)
     rVec: (nGrid, 3)
     dV:   (nGrid,)
     """
+
     nFreq, nGrid, _ = dispData.shape
-    I_total = np.zeros((nFreq, 3), dtype=np.complex128)
+    
+    # new version
+    itmAC = np.atleast_2d(itmAC)
+    nTM = len(itmAC[:,0]) # number of test-masses
+
+    # new version
+    I_total = np.zeros((nFreq, 3, nTM), dtype=np.complex128)
+
+    # old version
+    #I_total = np.zeros((nFreq, 3), dtype=np.complex128)
 
     def process_chunk(start, end):
         """Worker task for a subset of grid points."""
@@ -781,8 +953,10 @@ def compute_volume_parallel(dispData, rVec, zCav, rho, dV, n_jobs=4, chunk_size=
         r_chunk = rVec[start:end, :]
         dV_chunk = dV[start:end]
 
-        result = getVolNN_chunk(u_chunk, r_chunk, zCav, rho, dV_chunk)
-
+        # old version
+        #result = getVolNN_chunk(u_chunk, r_chunk, zCav, rho, dV_chunk, itmAC)
+        # updated
+        result = getVolNN_chunk_multiTM(u_chunk, r_chunk, rho, dV_chunk, itmAC)
         #print(f"[Worker {pid}] Finished chunk {start}:{end}")
         return result
 
@@ -806,7 +980,7 @@ def compute_volume_parallel(dispData, rVec, zCav, rho, dV, n_jobs=4, chunk_size=
     return I_total
 
 
-def getVolNN_chunk(u_chunk, r_chunk, zCav, rho, dV):
+def getVolNN_chunk(u_chunk, r_chunk, zCav, rho, dV, itmAC):
     """
     Compute the volume NN contribution for a spatial chunk, across all frequencies.
     u_chunk : (nFreq, nChunk, 3)
@@ -816,7 +990,15 @@ def getVolNN_chunk(u_chunk, r_chunk, zCav, rho, dV):
     dV      : (nChunk,) volume weights for integration
     """
     rRel = r_chunk.copy()
-    rRel[:, 2] -= zCav
+    rRel[:,0] -= itmAC[0]
+    rRel[:,1] -= itmAC[1]
+    rRel[:,2] -= itmAC[2]
+
+    #print('zCav inside getVolNNChunk = '+ str(zCav))
+    #print('itmAC[2] inside getVolNNChunk = ' + str(itmAC[2]))
+
+    #old version
+    #rRel[:, 2] -= zCav
     rDist = np.linalg.norm(rRel, axis=1)
     rCap = rRel / rDist[:, np.newaxis]
     rDist3 = rDist**3
@@ -835,7 +1017,96 @@ def getVolNN_chunk(u_chunk, r_chunk, zCav, rho, dV):
     I_chunk = np.sum(I_local, axis=1)      # (nFreq, 3)
     return I_chunk
 
-def getAnalyticRayNN(config):
+def getVolNN_chunk_multiTM(u_chunk, r_chunk, rho, dV, itmAC):
+    """
+    Compute the volume NN contribution for a spatial chunk,
+    across all frequencies and one or more test masses.
+
+    Parameters
+    ----------
+    u_chunk : ndarray, shape (nFreq, nChunk, 3)
+        Displacement field at integration points.
+
+    r_chunk : ndarray, shape (nChunk, 3)
+        Integration point coordinates.
+
+    zCav : float
+        Kept for backward compatibility. Not used here if itmAC gives full coordinates.
+
+    rho : float
+        Density [kg/m^3].
+
+    dV : ndarray, shape (nChunk,)
+        Volume weights.
+
+    itmAC : ndarray, shape (3,) or (nTM, 3)
+        Test-mass coordinates.
+
+    eps : float
+        Small cutoff to avoid division by zero if a point lies exactly on a test mass.
+
+    Returns
+    -------
+    I_chunk : ndarray, shape (nFreq, 3, nTM)
+        Volume NN contribution for each test mass.
+    """
+
+    u_chunk = np.asarray(u_chunk)
+    r_chunk = np.asarray(r_chunk, dtype=float)
+    dV = np.asarray(dV, dtype=float)
+
+    itmAC = np.asarray(itmAC, dtype=float)
+
+    # Allow old single-test-mass input shape (3,)
+    if itmAC.ndim == 1:
+        itmAC = itmAC[None, :]   # (1, 3)
+
+    nFreq = u_chunk.shape[0]
+    nTM = itmAC.shape[0]
+
+    # Relative vectors from each test mass to each integration point:
+    # rRel[m, q, :] = r_chunk[q, :] - itmAC[m, :]
+    rRel = r_chunk[None, :, :] - itmAC[:, None, :]       # (nTM, nChunk, 3)
+
+    rDist = np.linalg.norm(rRel, axis=2)                 # (nTM, nChunk)
+
+    # Avoid division by zero. Points exactly at test masses should normally
+    # already be removed by the cavity mask.
+    #bad = rDist < eps
+    #if np.any(bad):
+    #    rDist = rDist.copy()
+    #    rDist[bad] = np.inf
+
+    rCap = rRel / rDist[:, :, None]                      # (nTM, nChunk, 3)
+    rDist3 = rDist**3                                    # (nTM, nChunk)
+
+    # Broadcast:
+    # u_chunk: (nFreq, nChunk, 3)
+    # rCap:    (nTM,   nChunk, 3)
+    #
+    # Work arrays become:
+    #          (nFreq, nTM, nChunk, 3)
+    u = u_chunk[:, None, :, :]                           # (nFreq, 1, nChunk, 3)
+    rc = rCap[None, :, :, :]                             # (1, nTM, nChunk, 3)
+    rd3 = rDist3[None, :, :, None]                       # (1, nTM, nChunk, 1)
+    weights = dV[None, None, :, None]                    # (1, 1, nChunk, 1)
+
+    term1 = u / rd3
+
+    dot_ru = np.sum(rc * u, axis=3, keepdims=True)       # (nFreq, nTM, nChunk, 1)
+    term2 = 3.0 * rc * dot_ru / rd3
+
+    I_local = rho * (term1 - term2) * weights            # (nFreq, nTM, nChunk, 3)
+
+    # Sum over spatial points
+    I_sum = np.sum(I_local, axis=2)                      # (nFreq, nTM, 3)
+
+    # Return as (nFreq, 3, nTM)
+    I_chunk = np.transpose(I_sum, (0, 2, 1))
+
+    return I_chunk
+
+def getAnalyticRayNN(config,cavityDepth):
     # analytic Rayleigh wave calculation
     freqs = np.arange(config.fMin,config.fMax,config.df)
     nF = len(freqs)
@@ -845,7 +1116,7 @@ def getAnalyticRayNN(config):
     rho = config.rho
 
     periods = 1/freqs
-    h = config.cavityDepth
+    h = cavityDepth
     gamma = 0.8
 
     vR = surf96(thickness,vP,vS,rho,periods,wave="rayleigh",mode=1,velocity="phase",flat_earth=True)
@@ -880,7 +1151,852 @@ def make_centered_axis(xmin, xmax, target_dx=1.0, min_pts=3):
     w = np.full_like(x, dx)
     return x, w
 
-    
+def make_adaptive_centered_axis(xmin, xmax, cavity_min, cavity_max, dx_inside=1.0, dx_near=1.0, 
+                                dx_mid=2.0, dx_far=5.0, near_width=20.0, mid_width=80.0, min_pts_per_segment=1):
+    """
+    Cell-centered nonuniform axis inside [xmin, xmax].
+
+    The cavity interval [cavity_min, cavity_max] is included in the axis
+    because points are later removed by the cavity mask.
+
+    Spacing is finest inside/near the cavity and grows outward.
+
+    Returns
+    -------
+    x : ndarray
+        Cell centers.
+    w : ndarray
+        Cell widths.
+    """
+
+    def add_segment(edges, a, b, dx):
+        if b <= a:
+            return edges
+
+        L = b - a
+        n = max(min_pts_per_segment, int(np.ceil(L / dx)))
+        local_edges = np.linspace(a, b, n + 1)
+
+        if len(edges) == 0:
+            return list(local_edges)
+        else:
+            return edges + list(local_edges[1:])
+
+    # Important breakpoints
+    c0 = cavity_min
+    c1 = cavity_max
+
+    # near shell around cavity
+    n0 = max(xmin, c0 - near_width)
+    n1 = min(xmax, c1 + near_width)
+
+    # mid shell around cavity
+    m0 = max(xmin, c0 - mid_width)
+    m1 = min(xmax, c1 + mid_width)
+
+    # Build sorted breakpoints clipped to [xmin, xmax]
+    breaks = [xmin, m0,n0,c0,c1,n1,m1,xmax]
+
+    breaks = np.array(sorted(set([float(np.clip(v, xmin, xmax)) for v in breaks])))
+
+    edges = []
+
+    for a, b in zip(breaks[:-1], breaks[1:]):
+        if b <= a:
+            continue
+
+        # Segment classification by location relative to cavity
+        seg_mid = 0.5 * (a + b)
+
+        if c0 <= seg_mid <= c1:
+            dx = dx_inside
+        elif n0 <= seg_mid <= n1:
+            dx = dx_near
+        elif m0 <= seg_mid <= m1:
+            dx = dx_mid
+        else:
+            dx = dx_far
+
+        edges = add_segment(edges, a, b, dx)
+
+    edges = np.asarray(edges)
+    x = 0.5 * (edges[:-1] + edges[1:])
+    w = edges[1:] - edges[:-1]
+
+    return x, w
+
+def make_adaptive_z_axis(zmin,zmax, cav_zmin, cav_zmax, dz_inside=1.0, dz_near=1.0, dz_mid=2.0,
+                         dz_far=5.0, near_width=15.0, mid_width=30.0, min_pts_per_segment=1):
+    """
+    Cell-centered nonuniform z axis in [zmin, zmax], classified by distance
+    to the cavity interval [cav_zmin, cav_zmax].
+
+    Interpretation:
+      inside cavity:      [cav_zmin, cav_zmax]
+      near cavity shell:  distance <= near_width
+      mid cavity shell:   near_width < distance <= mid_width
+      far:                distance > mid_width
+    """
+
+    def add_segment(edges, a, b, dz):
+        if b <= a:
+            return edges
+
+        L = b - a
+        n = max(min_pts_per_segment, int(np.ceil(L / dz)))
+        local_edges = np.linspace(a, b, n + 1)
+
+        if len(edges) == 0:
+            return list(local_edges)
+        else:
+            return edges + list(local_edges[1:])
+
+    # breakpoints induced by cavity interval and shell widths
+    breaks = [
+        zmin,
+        cav_zmin - (near_width + mid_width),
+        cav_zmin - near_width,
+        cav_zmin,
+        cav_zmax,
+        cav_zmax + near_width,
+        cav_zmax + (near_width + mid_width),
+        zmax,
+    ]
+
+    breaks = np.array(sorted(set(float(np.clip(v, zmin, zmax)) for v in breaks)))
+
+    edges = []
+
+    for a, b in zip(breaks[:-1], breaks[1:]):
+        if b <= a:
+            continue
+
+        zm = 0.5 * (a + b)
+
+        # distance of zm to cavity interval
+        if cav_zmin <= zm <= cav_zmax:
+            dz = dz_inside
+        elif zm < cav_zmin:
+            dist = cav_zmin - zm
+            if dist <= near_width:
+                dz = dz_near
+            elif dist <= (near_width+mid_width):
+                dz = dz_mid
+            else:
+                dz = dz_far
+        else:  # zm > cav_zmax
+            dist = zm - cav_zmax
+            if dist <= near_width:
+                dz = dz_near
+            elif dist <= (near_width+ mid_width):
+                dz = dz_mid
+            else:
+                dz = dz_far
+
+        edges = add_segment(edges, a, b, dz)
+
+    edges = np.asarray(edges)
+    z = 0.5 * (edges[:-1] + edges[1:])
+    w = edges[1:] - edges[:-1]
+
+    return z, w
+
+def choose_adaptive_widths(block_min, block_max, cavity_min, cavity_max,
+                           near_cap=20.0, mid_cap=80.0,
+                           near_frac=1.0/3.0, mid_frac=2.0/3.0):
+    """
+    Choose near_width and mid_width measured outward from the cavity wall,
+    clipped to the available refined shell size inside this block.
+
+    Returns
+    -------
+    near_width, mid_width
+    """
+
+    # Available space outside the cavity on both sides within this block
+    left_shell  = max(0.0, cavity_min - block_min)
+    right_shell = max(0.0, block_max - cavity_max)
+
+    # Use the smaller side so the refinement zones fit symmetrically
+    shell_half = min(left_shell, right_shell)
+
+    near_width = min(near_cap, near_frac * shell_half)
+    mid_width  = min(mid_cap,  mid_frac  * shell_half)
+
+    # Keep ordering sensible
+    mid_width = max(mid_width, near_width)
+
+    return near_width, mid_width
+
+def cavity_xy_intervals(cavity: dict) -> tuple[tuple[float, float], tuple[float, float]]:
+    shape = cavity["shape"].lower()
+
+    if shape == "sphere":
+        r = cavity["radius"]
+        x0 = cavity["xC"] - r
+        x1 = cavity["xC"] + r
+        y0 = cavity["yC"] - r
+        y1 = cavity["yC"] + r
+        return (x0, x1), (y0, y1)
+
+    if shape == "cuboid":
+        xC = cavity["xC"]
+        yC = cavity["yC"]
+        length = cavity["length"]
+        breadth = cavity["breadth"]
+        angle_deg = cavity["angleDeg"]
+
+        theta = math.radians(angle_deg)
+        u = np.array([math.cos(theta), math.sin(theta)])
+        v = np.array([-math.sin(theta), math.cos(theta)])
+
+        hl = 0.5 * length
+        hb = 0.5 * breadth
+        center = np.array([xC, yC])
+
+        corners = np.array([
+            center - hl * u - hb * v,
+            center - hl * u + hb * v,
+            center + hl * u + hb * v,
+            center + hl * u - hb * v,
+        ])
+
+        x0 = float(np.min(corners[:, 0]))
+        x1 = float(np.max(corners[:, 0]))
+        y0 = float(np.min(corners[:, 1]))
+        y1 = float(np.max(corners[:, 1]))
+        return (x0, x1), (y0, y1)
+
+    raise ValueError(f"Unsupported cavity shape: {cavity['shape']}")
+
+
+def merge_intervals(intervals: list[tuple[float, float]], gap_tol: float = 0.0) -> list[tuple[float, float]]:
+    if not intervals:
+        return []
+
+    intervals = sorted(intervals, key=lambda t: t[0])
+    merged = [intervals[0]]
+
+    for a, b in intervals[1:]:
+        last_a, last_b = merged[-1]
+        if a <= last_b + gap_tol:
+            merged[-1] = (last_a, max(last_b, b))
+        else:
+            merged.append((a, b))
+
+    return merged
+
+
+def build_merged_xy_intervals(
+    cavities: list[dict],
+    gap_tol: float = 0.0
+) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
+    x_intervals = []
+    y_intervals = []
+
+    for cav in cavities:
+        ix, iy = cavity_xy_intervals(cav)
+        x_intervals.append(ix)
+        y_intervals.append(iy)
+
+    return merge_intervals(x_intervals, gap_tol), merge_intervals(y_intervals, gap_tol)
+
+
+def choose_adaptive_widths_multi(
+    block_min: float,
+    block_max: float,
+    intervals: list[tuple[float, float]],
+    near_cap: float = 20.0,
+    mid_cap: float = 80.0,
+    near_frac: float = 1.0 / 3.0,
+    mid_frac: float = 2.0 / 3.0,
+) -> tuple[float, float]:
+    if not intervals:
+        return near_cap, mid_cap
+
+    shell_half_all = []
+    for cavity_min, cavity_max in intervals:
+        left_shell = max(0.0, cavity_min - block_min)
+        right_shell = max(0.0, block_max - cavity_max)
+        shell_half_all.append(min(left_shell, right_shell))
+
+    shell_half = min(shell_half_all)
+
+    near_width = min(near_cap, near_frac * shell_half)
+    mid_width = min(mid_cap, mid_frac * shell_half)
+    mid_width = max(mid_width, near_width)
+
+    return near_width, mid_width
+
+
+def _point_in_any_interval(x: float, intervals: list[tuple[float, float]]) -> bool:
+    return any(a <= x <= b for a, b in intervals)
+
+
+def _distance_to_intervals(x: float, intervals: list[tuple[float, float]]) -> float:
+    if not intervals:
+        return float("inf")
+
+    vals = []
+    for a, b in intervals:
+        if x < a:
+            vals.append(a - x)
+        elif x > b:
+            vals.append(x - b)
+        else:
+            vals.append(0.0)
+    return min(vals)
+
+
+def _add_segment(edges: list[float], a: float, b: float, dx: float, min_pts_per_segment: int = 1) -> list[float]:
+    if b <= a:
+        return edges
+
+    L = b - a
+    n = max(min_pts_per_segment, int(np.ceil(L / dx)))
+    local_edges = np.linspace(a, b, n + 1)
+
+    if len(edges) == 0:
+        return list(local_edges)
+    return edges + list(local_edges[1:])
+
+
+def make_adaptive_axis_multi(
+    xmin: float,
+    xmax: float,
+    intervals: list[tuple[float, float]],
+    dx_inside: float = 1.0,
+    dx_near: float = 1.0,
+    dx_mid: float = 2.0,
+    dx_far: float = 5.0,
+    near_width: float = 20.0,
+    mid_width: float = 80.0,
+    min_pts_per_segment: int = 1,
+) -> tuple[np.ndarray, np.ndarray]:
+    breaks = [xmin, xmax]
+
+    for c0, c1 in intervals:
+        breaks.extend([
+            c0, c1,
+            c0 - near_width, c1 + near_width,
+            c0 - mid_width, c1 + mid_width,
+        ])
+
+    breaks = sorted(set(float(np.clip(v, xmin, xmax)) for v in breaks))
+
+    edges = []
+    for a, b in zip(breaks[:-1], breaks[1:]):
+        if b <= a:
+            continue
+
+        xm = 0.5 * (a + b)
+        d = _distance_to_intervals(xm, intervals)
+
+        if _point_in_any_interval(xm, intervals):
+            dx = dx_inside
+        elif d <= near_width:
+            dx = dx_near
+        elif d <= mid_width:
+            dx = dx_mid
+        else:
+            dx = dx_far
+
+        edges = _add_segment(edges, a, b, dx, min_pts_per_segment=min_pts_per_segment)
+
+    edges = np.asarray(sorted(set(edges)), dtype=float)
+    x = 0.5 * (edges[:-1] + edges[1:])
+    w = edges[1:] - edges[:-1]
+    return x, w
+
+
+def generate_adaptive_xy_axes(
+    cavities: list[dict],
+    x_min: float,
+    x_max: float,
+    y_min: float,
+    y_max: float,
+    dx_inside: float = 1.0,
+    dx_near: float = 1.0,
+    dx_mid: float = 2.0,
+    dx_far: float = 5.0,
+    dy_inside: float = 1.0,
+    dy_near: float = 1.0,
+    dy_mid: float = 2.0,
+    dy_far: float = 5.0,
+    near_cap: float = 20.0,
+    mid_cap: float = 80.0,
+    near_frac: float = 1.0 / 3.0,
+    mid_frac: float = 2.0 / 3.0,
+    gap_tol: float = 0.0,
+):
+    x_intervals_merged, y_intervals_merged = build_merged_xy_intervals(cavities, gap_tol=gap_tol)
+
+    near_x, mid_x = choose_adaptive_widths_multi(
+        x_min, x_max, x_intervals_merged,
+        near_cap=near_cap, mid_cap=mid_cap,
+        near_frac=near_frac, mid_frac=mid_frac,
+    )
+    near_y, mid_y = choose_adaptive_widths_multi(
+        y_min, y_max, y_intervals_merged,
+        near_cap=near_cap, mid_cap=mid_cap,
+        near_frac=near_frac, mid_frac=mid_frac,
+    )
+
+    gridX, gridXW = make_adaptive_axis_multi(
+        x_min, x_max, x_intervals_merged,
+        dx_inside=dx_inside, dx_near=dx_near, dx_mid=dx_mid, dx_far=dx_far,
+        near_width=near_x, mid_width=mid_x,
+    )
+    gridY, gridYW = make_adaptive_axis_multi(
+        y_min, y_max, y_intervals_merged,
+        dx_inside=dy_inside, dx_near=dy_near, dx_mid=dy_mid, dx_far=dy_far,
+        near_width=near_y, mid_width=mid_y,
+    )
+
+    return {
+        "gridX": gridX,
+        "gridXW": gridXW,
+        "gridY": gridY,
+        "gridYW": gridYW,
+        "xIntervalsMerged": x_intervals_merged,
+        "yIntervalsMerged": y_intervals_merged,
+        "near_x": near_x,
+        "mid_x": mid_x,
+        "near_y": near_y,
+        "mid_y": mid_y,
+    }
+
+def points_inside_sphere(x, y, z, cavity):
+    """
+    True where points are inside the spherical cavity.
+    """
+    xC = cavity["xC"]
+    yC = cavity["yC"]
+    zC = cavity["zC"]
+    r = cavity["radius"]
+
+    r2 = (x - xC)**2 + (y - yC)**2 + (z + zC)**2
+    return r2 <= r**2
+
+
+def points_inside_cuboid(x, y, z, cavity):
+    """
+    True where points are inside the cuboid cavity.
+    Cuboid may be rotated in the x-y plane.
+    """
+    xC = cavity["xC"]
+    yC = cavity["yC"]
+    zC = cavity["zC"]
+
+    ax = cavity["length"] / 2.0
+    ay = cavity["breadth"] / 2.0
+    az = cavity["height"] / 2.0
+    angleDeg = cavity.get("angleDeg", 0.0)
+
+    theta = np.deg2rad(angleDeg)
+
+    dx = x - xC
+    dy = y - yC
+    dz = z + zC
+
+    # transform to cavity-local coordinates
+    x_local =  np.cos(theta) * dx + np.sin(theta) * dy
+    y_local = -np.sin(theta) * dx + np.cos(theta) * dy
+
+    return (
+        (np.abs(x_local) <= ax) &
+        (np.abs(y_local) <= ay) &
+        (np.abs(dz) <= az)
+    )
+
+
+def mask_points_outside_all_cavities(x, y, z, allCavities):
+    """
+    Returns boolean mask:
+        True  -> point is outside all cavities
+        False -> point is inside at least one cavity
+    """
+    inside_any = np.zeros_like(x, dtype=bool)
+
+    for cav in allCavities:
+        shape = cav["shape"].lower()
+
+        if shape == "sphere":
+            inside_any |= points_inside_sphere(x, y, z, cav)
+
+        elif shape == "cuboid":
+            inside_any |= points_inside_cuboid(x, y, z, cav)
+
+        else:
+            raise ValueError(f"Unsupported cavity shape: {cav['shape']}")
+
+    return ~inside_any
+
+def choose_z_shell_widths_from_global_band(allCavities, cubeTop, cubeBot):
+    half_heights = []
+    for cav in allCavities:
+        if cav["shape"] == "cuboid":
+            hz = 0.5 * cav["height"]
+        elif cav["shape"] == "sphere":
+            hz = cav["radius"]
+        else:
+            raise ValueError("Unsupported cavity type")
+        half_heights.append(hz)
+
+    iref = int(np.argmax(half_heights))
+    cav_ref = allCavities[iref]
+
+    center_z = cav_ref["zC"]
+    h = half_heights[iref]
+
+    phys_top = center_z - h
+    phys_bot = center_z + h
+
+    top_buffer = phys_top - cubeTop
+    bottom_buffer = cubeBot - phys_bot
+
+    z_buffer = min(top_buffer, bottom_buffer)
+
+    near_z = (1.0/3.0) * z_buffer
+    mid_z  = (2.0/3.0) * z_buffer
+
+    return near_z, mid_z
+
+
+def cavity_xy_bbox(cavity: dict) -> tuple[float, float, float, float]:
+    """
+    Returns axis-aligned XY bounding box:
+        (x_min, x_max, y_min, y_max)
+    """
+    shape = cavity["shape"].lower()
+
+    if shape == "sphere":
+        r = cavity["radius"]
+        return (
+            cavity["xC"] - r,
+            cavity["xC"] + r,
+            cavity["yC"] - r,
+            cavity["yC"] + r,
+        )
+
+    if shape == "cuboid":
+        xC = cavity["xC"]
+        yC = cavity["yC"]
+        length = cavity["length"]
+        breadth = cavity["breadth"]
+        angle_deg = cavity.get("angleDeg", 0.0)
+
+        theta = math.radians(angle_deg)
+        u = np.array([math.cos(theta), math.sin(theta)])
+        v = np.array([-math.sin(theta), math.cos(theta)])
+
+        hl = 0.5 * length
+        hb = 0.5 * breadth
+        ctr = np.array([xC, yC])
+
+        corners = np.array([
+            ctr - hl * u - hb * v,
+            ctr - hl * u + hb * v,
+            ctr + hl * u + hb * v,
+            ctr + hl * u - hb * v,
+        ])
+
+        return (
+            float(np.min(corners[:, 0])),
+            float(np.max(corners[:, 0])),
+            float(np.min(corners[:, 1])),
+            float(np.max(corners[:, 1])),
+        )
+
+    raise ValueError(f"Unsupported cavity shape: {cavity['shape']}")
+
+
+def bboxes_overlap_or_close(
+    bbox_a: tuple[float, float, float, float],
+    bbox_b: tuple[float, float, float, float],
+    gap_tol: float,
+) -> bool:
+    xa0, xa1, ya0, ya1 = bbox_a
+    xb0, xb1, yb0, yb1 = bbox_b
+
+    x_sep = max(xa0, xb0) - min(xa1, xb1)
+    y_sep = max(ya0, yb0) - min(ya1, yb1)
+
+    return (x_sep <= gap_tol) and (y_sep <= gap_tol)
+
+
+def merge_two_bboxes(
+    bbox_a: tuple[float, float, float, float],
+    bbox_b: tuple[float, float, float, float],
+) -> tuple[float, float, float, float]:
+    return (
+        min(bbox_a[0], bbox_b[0]),
+        max(bbox_a[1], bbox_b[1]),
+        min(bbox_a[2], bbox_b[2]),
+        max(bbox_a[3], bbox_b[3]),
+    )
+
+
+def merge_bboxes_xy(
+    bboxes: list[tuple[float, float, float, float]],
+    gap_tol: float,
+) -> list[tuple[float, float, float, float]]:
+    if not bboxes:
+        return []
+
+    working = bboxes[:]
+    changed = True
+
+    while changed:
+        changed = False
+        used = [False] * len(working)
+        out = []
+
+        for i in range(len(working)):
+            if used[i]:
+                continue
+
+            cur = working[i]
+            used[i] = True
+
+            grew = True
+            while grew:
+                grew = False
+                for j in range(len(working)):
+                    if used[j]:
+                        continue
+                    if bboxes_overlap_or_close(cur, working[j], gap_tol):
+                        cur = merge_two_bboxes(cur, working[j])
+                        used[j] = True
+                        grew = True
+                        changed = True
+
+            out.append(cur)
+
+        working = out
+
+    return working
+
+
+def choose_patch_widths_for_cluster(
+    cluster_bbox: tuple[float, float, float, float],
+    x_min: float,
+    x_max: float,
+    y_min: float,
+    y_max: float,
+    near_cap: float,
+    mid_cap: float,
+    near_frac: float,
+    mid_frac: float,
+) -> tuple[float, float, float, float]:
+    """
+    Returns:
+        near_x, mid_x, near_y, mid_y
+
+    IMPORTANT:
+    near_x / near_y are near-shell widths
+    mid_x  / mid_y  are mid-shell widths
+    not cumulative outer paddings.
+    """
+    bx0, bx1, by0, by1 = cluster_bbox
+
+    left_gap = max(0.0, bx0 - x_min)
+    right_gap = max(0.0, x_max - bx1)
+    shell_x = min(left_gap, right_gap)
+
+    bottom_gap = max(0.0, by0 - y_min)
+    top_gap = max(0.0, y_max - by1)
+    shell_y = min(bottom_gap, top_gap)
+
+    near_x = min(near_cap, near_frac * shell_x)
+    mid_x = min(mid_cap, mid_frac * shell_x)
+    mid_x = max(mid_x, near_x)
+
+    near_y = min(near_cap, near_frac * shell_y)
+    mid_y = min(mid_cap, mid_frac * shell_y)
+    mid_y = max(mid_y, near_y)
+
+    return near_x, mid_x, near_y, mid_y
+
+
+def expand_and_clip_bbox_xy(
+    bbox: tuple[float, float, float, float],
+    pad_x: float,
+    pad_y: float,
+    x_min: float,
+    x_max: float,
+    y_min: float,
+    y_max: float,
+) -> tuple[float, float, float, float]:
+    return (
+        max(x_min, bbox[0] - pad_x),
+        min(x_max, bbox[1] + pad_x),
+        max(y_min, bbox[2] - pad_y),
+        min(y_max, bbox[3] + pad_y),
+    )
+
+
+def make_rect_patch_points(
+    x_min: float,
+    x_max: float,
+    y_min: float,
+    y_max: float,
+    dx: float,
+    dy: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Returns:
+        XY: shape (N, 2)
+        dA: shape (N,)
+    """
+    if x_max <= x_min or y_max <= y_min:
+        return np.zeros((0, 2), dtype=float), np.zeros((0,), dtype=float)
+
+    nx = max(1, int(np.ceil((x_max - x_min) / dx)))
+    ny = max(1, int(np.ceil((y_max - y_min) / dy)))
+
+    x_edges = np.linspace(x_min, x_max, nx + 1)
+    y_edges = np.linspace(y_min, y_max, ny + 1)
+
+    x_centers = 0.5 * (x_edges[:-1] + x_edges[1:])
+    y_centers = 0.5 * (y_edges[:-1] + y_edges[1:])
+
+    XX, YY = np.meshgrid(x_centers, y_centers, indexing="xy")
+    XY = np.column_stack((XX.ravel(), YY.ravel()))
+
+    cell_dx = x_edges[1:] - x_edges[:-1]
+    cell_dy = y_edges[1:] - y_edges[:-1]
+    DX, DY = np.meshgrid(cell_dx, cell_dy, indexing="xy")
+    dA = (DX * DY).ravel()
+
+    return XY, dA
+
+
+def replace_points_in_rect(
+    XY: np.ndarray,
+    dA: np.ndarray,
+    rect_bbox: tuple[float, float, float, float],
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Remove existing points inside rect_bbox.
+    """
+    if XY.size == 0:
+        return XY, dA
+
+    x0, x1, y0, y1 = rect_bbox
+    inside = (
+        (XY[:, 0] >= x0) & (XY[:, 0] <= x1) &
+        (XY[:, 1] >= y0) & (XY[:, 1] <= y1)
+    )
+
+    return XY[~inside, :], dA[~inside]
+
+
+def generate_adaptive_xy_pointcloud(
+    cavities: list[dict],
+    x_min: float,
+    x_max: float,
+    y_min: float,
+    y_max: float,
+    dx_inside: float = 1.0,
+    dy_inside: float = 1.0,
+    dx_near: float = 1.0,
+    dy_near: float = 1.0,
+    dx_mid: float = 2.0,
+    dy_mid: float = 2.0,
+    dx_far: float = 5.0,
+    dy_far: float = 5.0,
+    near_frac: float = 1.0 / 3.0,
+    mid_frac: float = 2.0 / 3.0,
+    near_cap: float = 20.0,
+    mid_cap: float = 80.0,
+    gap_tol: float = 10.0,
+) -> dict:
+    """
+    Build adaptive XY point cloud from local patches.
+
+    Returns dict with:
+        gridX_flat
+        gridY_flat
+        gridW_flat
+        XY
+        dA
+        cavity_bboxes
+        cluster_bboxes
+    """
+    cavity_bboxes = [cavity_xy_bbox(cav) for cav in cavities]
+    cluster_bboxes = merge_bboxes_xy(cavity_bboxes, gap_tol=gap_tol)
+
+    # Start with far patch over full block
+    XY, dA = make_rect_patch_points(x_min, x_max, y_min, y_max, dx_far, dy_far)
+
+    # Mid patches
+    for cluster_bbox in cluster_bboxes:
+        near_x, mid_x, near_y, mid_y = choose_patch_widths_for_cluster(
+            cluster_bbox, x_min, x_max, y_min, y_max,
+            near_cap, mid_cap, near_frac, mid_frac,
+        )
+
+        # IMPORTANT: mid shell width is mid_x itself, so cumulative pad is near + mid
+        mid_bbox = expand_and_clip_bbox_xy(
+            cluster_bbox,
+            near_x + mid_x,
+            near_y + mid_y,
+            x_min, x_max, y_min, y_max,
+        )
+
+        XY, dA = replace_points_in_rect(XY, dA, mid_bbox)
+        XY_new, dA_new = make_rect_patch_points(
+            mid_bbox[0], mid_bbox[1], mid_bbox[2], mid_bbox[3], dx_mid, dy_mid
+        )
+        XY = np.vstack((XY, XY_new))
+        dA = np.concatenate((dA, dA_new))
+
+    # Near patches
+    for cluster_bbox in cluster_bboxes:
+        near_x, mid_x, near_y, mid_y = choose_patch_widths_for_cluster(
+            cluster_bbox, x_min, x_max, y_min, y_max,
+            near_cap, mid_cap, near_frac, mid_frac,
+        )
+
+        near_bbox = expand_and_clip_bbox_xy(
+            cluster_bbox,
+            near_x,
+            near_y,
+            x_min, x_max, y_min, y_max,
+        )
+
+        XY, dA = replace_points_in_rect(XY, dA, near_bbox)
+        XY_new, dA_new = make_rect_patch_points(
+            near_bbox[0], near_bbox[1], near_bbox[2], near_bbox[3], dx_near, dy_near
+        )
+        XY = np.vstack((XY, XY_new))
+        dA = np.concatenate((dA, dA_new))
+
+    # Inside patches
+    for cluster_bbox in cluster_bboxes:
+        XY, dA = replace_points_in_rect(XY, dA, cluster_bbox)
+        XY_new, dA_new = make_rect_patch_points(
+            cluster_bbox[0], cluster_bbox[1], cluster_bbox[2], cluster_bbox[3],
+            dx_inside, dy_inside
+        )
+        XY = np.vstack((XY, XY_new))
+        dA = np.concatenate((dA, dA_new))
+
+    gridX_flat = XY[:, 0].copy()
+    gridY_flat = XY[:, 1].copy()
+    gridW_flat = dA.copy()
+
+    return {
+        "gridX_flat": gridX_flat,
+        "gridY_flat": gridY_flat,
+        "gridW_flat": gridW_flat,
+        "XY": XY,
+        "dA": dA,
+        "cavity_bboxes": cavity_bboxes,
+        "cluster_bboxes": cluster_bboxes,
+    }
+
 def lgwtPoints(N, a, b):
     """
     generate points within an interval based on Gauss-Legendre quadrature rule

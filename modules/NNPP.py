@@ -218,7 +218,7 @@ def scaleNN(nnAllRea, dispAllRea, freqOut, config, scaleComp="Z", scaleDepth="su
     # component mapping
     comp_idx = {"E": 0, "N": 1, "Z": 2, "X": 0, "Y": 1}
 
-    nnScaled = nnAllRea.astype(np.complex128, copy=True)
+    nnScaled = nnAllRea.astype(np.float64, copy=True)
 
     if scaleComp == "all":
         # scale each NN component by its matching displacement component at chosen depth

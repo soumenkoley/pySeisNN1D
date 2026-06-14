@@ -247,7 +247,7 @@ def computeFullDispN(zTar, gridX, gridY, xSrc, ySrc, azSrc, srcMeta, idxFreq, fr
 
     return dispTotal, outDir, freqOut_used, shmPaths
 
-def computeFullDispF(zTar, gridX, gridY, xSrc, ySrc, azSrc, srcMeta,idxFreq, freqOut, outDispPath,
+def computeFullDispF(zTar, gridX, gridY, itmAC, xSrc, ySrc, azSrc, srcMeta,idxFreq, freqOut, outDispPath,
                      splitAllNew, xMaxGF, fInpPath, nCPU=4, nChunk=20000, computeStrategy="loky_sharedmem",
                      saveHV=False, reduceNN=False, nnMode=None, nnMeta=None):
     """
@@ -261,7 +261,7 @@ def computeFullDispF(zTar, gridX, gridY, xSrc, ySrc, azSrc, srcMeta,idxFreq, fre
 
     # 1) output folder
     outDir = makeDepthDispfolder(outDispPath, zTar)
-    os.makedirs(outDir, exist_ok=True)
+    #os.makedirs(outDir, exist_ok=True)
 
     # 2) load FFT-domain Green's functions for this depth
     xxWFFT, distVec = gfLoader.getInterpolatedGFFFT(
@@ -269,7 +269,7 @@ def computeFullDispF(zTar, gridX, gridY, xSrc, ySrc, azSrc, srcMeta,idxFreq, fre
     )
 
     # 3) compute field / reduced NN
-    result = simFixedDepth_partition_receiversF(xxWFFT=xxWFFT, distVec=distVec, xGrid=gridX, yGrid=gridY,
+    result = simFixedDepth_partition_receiversF(xxWFFT=xxWFFT, distVec=distVec, xGrid=gridX, yGrid=gridY, itmAC=itmAC,
                                                 zTar=zTar, xSrc=xSrc, ySrc=ySrc, azSrc=azSrc, srcMeta=srcMeta,
                                                 chunk_size=nChunk, outDir=outDir, n_workers=nCPU, freqOut=freqOut,
                                                 saveHV=saveHV, computeStrategy=computeStrategy, reduceNN=reduceNN,
@@ -287,6 +287,7 @@ def computeFullDispF(zTar, gridX, gridY, xSrc, ySrc, azSrc, srcMeta,idxFreq, fre
     # legacy usage
     dispTotal, freqOut_used, shmPaths = result
     return dispTotal, outDir, freqOut_used, shmPaths
+
 
 def assembleSurfDeepDispAllRea(outReaPath,zList, freqOut, nRea):
     """
@@ -312,7 +313,33 @@ def assembleSurfDeepDispAllRea(outReaPath,zList, freqOut, nRea):
     sName = 'fullDisp.npz'
     np.savez(os.path.join(outReaPath, sName), dispPointAllRea=dispPointAllRea, freqOut=freqOut, attnAllRea=attnAllRea)
     return dispPointAllRea, attnAllRea, freqOut
+
+def assembleSurfDeepDispAllReaMultiPoint(outReaPath,itmAll, zList, freqOut, nRea):
+    """
+    to be run at the end of all realizations
+    compute the rms of surface and deep displacements
     
+    """
+    nFreq = len(freqOut)
+    zLen = len(zList)
+    nRec = len(itmAll[:,0])
+    
+    dispPointAllRea = np.zeros((nFreq,nRec,3,zLen))
+    attnAllRea = np.zeros((nFreq,nRec,3))
+    
+    for reaNo in range(0,nRea):
+        sName = 'surfDeepDispRea' + str(reaNo) + '.npz'
+        data = np.load(os.path.join(outReaPath,sName));
+        dispPointFull = data["dispPointFull"]
+        dispPointAllRea = dispPointAllRea + dispPointFull**2
+
+    dispPointAllRea = np.sqrt(dispPointAllRea/nRea)
+    attnAllRea = dispPointAllRea[:,:,:,0]/dispPointAllRea[:,:,:,1]
+    freqOut = data["freqOut"]
+    sName = 'fullDisp.npz'
+    np.savez(os.path.join(outReaPath, sName), dispPointAllRea=dispPointAllRea, freqOut=freqOut, attnAllRea=attnAllRea)
+    return dispPointAllRea, attnAllRea, freqOut
+  
 def getSurfDeepDispPerRea(zList, xSrc, ySrc, azSrc, srcMeta, xMaxGF, splitAll, fMin, fMax, outReaPath,
                     fInpPath, components, reaNo, idxFreq = None, freqOut=None, nCPU = 4):
     """
@@ -354,6 +381,42 @@ def getSurfDeepDispPerRea(zList, xSrc, ySrc, azSrc, srcMeta, xMaxGF, splitAll, f
     np.savez(os.path.join(outReaPath, sName), dispPointFull=dispPointFull, freqOut=freqOut)
     return dispPointFull, freqOut
     
+def getSurfDeepDispPerReaMultiPoint(zList, itmAll, xSrc, ySrc, azSrc, srcMeta, xMaxGF, splitAll, fMin, fMax, outReaPath,
+                    fInpPath, components, reaNo, idxFreq = None, freqOut=None, nCPU = 4):
+    """
+    this script will be run before every realization
+    for a particular source distribution which is fixed per realization
+    it will compute the displacement at desired points on the surface and at depth
+    specified by zList, and itmAll
+    the grid will be generated within and will be a small one because we are only interested
+    at getting the displacement at desired points
+    
+    """
+    
+    # make them flat
+    gridX = np.asarray(itmAll[:,0]); gridY = np.asarray(itmAll[:,1])
+    nRec = len(gridX)
+
+    nFreq = len(freqOut)
+    zLen = len(zList)
+    
+    dispPointFull = np.zeros((nFreq,nRec,3,zLen))
+    
+    for zNo, zVal in enumerate(zList):
+        # make outDispDir
+        outDir = makeDepthDispfolder(outReaPath, zVal)
+        # load the green's funtion for the depth
+        xxW, tVec, distVec = gfLoader.getInterpolatedGF(splitAll, zVal, 0.01, xMaxGF, fInpPath,
+                                                            components, minVel=100.0)
+        dispHForce, dispVForce, freqOut = simFixedDepth_partition_receivers(xxW, tVec, distVec, gridX, gridY, xSrc, ySrc, azSrc,
+                                                srcMeta, fMin, fMax, 20000, outDir, n_workers=nCPU, idxFreq = idxFreq, freqOut=freqOut)
+        dispPointFull[:,:,:,zNo] = np.abs(dispHForce + dispVForce)
+
+    # save this in the rea path, to be read in again after all realizations have been done
+    # to scale the outputNN
+    sName = 'surfDeepDispRea' + str(reaNo) + '.npz'
+    np.savez(os.path.join(outReaPath, sName), dispPointFull=dispPointFull, freqOut=freqOut)
+    return dispPointFull, freqOut
 
 def getDispPerRea(outDir,xP,yP):
     # first load the all the receievr grid
@@ -530,7 +593,10 @@ def worker_proc_loky_sharedout(worker_id, rec_start, rec_end, xxWFFT_sel, distVe
 
     # Local accumulation in normal RAM
     localTotal = np.zeros((nFreq, nRec_w, 3), dtype=disp_dtype)
-
+    # commenting this part out, was used for correlation tensor analysis
+    #localPtr = np.zeros((nFreq,), dtype=np.float64)
+    #localPtt = np.zeros((nFreq,), dtype=np.float64)
+    
     if saveHV:
         localH = np.zeros((nFreq, nRec_w, 3), dtype=disp_dtype)
         localV = np.zeros((nFreq, nRec_w, 3), dtype=disp_dtype)
@@ -596,6 +662,13 @@ def worker_proc_loky_sharedout(worker_id, rec_start, rec_end, xxWFFT_sel, distVe
             localTotal[:, jj0:jj1, 1] += (Hy + Vy)
             localTotal[:, jj0:jj1, 2] += (Hz + Vz)
 
+            # commenting this part was used for correlation tensor analysis
+            #localPtr += np.sum(np.abs(xxInterpH[:, :, 1])**2, axis=1)
+            #localPtt += np.sum(np.abs(xxInterpH[:, :, 2])**2, axis=1)
+            
+            #localPtr += np.sum(np.abs(Hx)**2, axis=1)
+            #localPtt += np.sum(np.abs(Hy)**2, axis=1)
+
             if saveHV:
                 localH[:, jj0:jj1, 0] += Hx
                 localH[:, jj0:jj1, 1] += Hy
@@ -615,9 +688,76 @@ def worker_proc_loky_sharedout(worker_id, rec_start, rec_end, xxWFFT_sel, distVe
         dispH.flush()
         dispV.flush()
 
+    # not returning localPtt and local Ptr anymore
     return True
 
-def worker_procF(worker_id, rec_start, rec_end, xxWFFT_sel, distVec, xGrid, yGrid, xSrc, ySrc, azSrc,
+def worker_proc_SP(xxWFFT_sel, distVec, xGrid, yGrid, xSrc, ySrc, azSrc, phaseVAll, phaseHAll, nFreq):
+    
+    # does the same thing as worker_proc_loky_sharedout but is
+    # tailored for single point usage, especially useful when parallelizing multiple
+    # points that span different depths
+
+    # Local accumulation in normal RAM
+    localTotal = np.zeros((nFreq, 1, 3), dtype=np.complex128)
+    
+    nSrc = len(xSrc)
+    xGrid = np.atleast_1d(xGrid)
+    yGrid = np.atleast_1d(yGrid)
+
+    for srcNo in range(nSrc):
+        xS = xSrc[srcNo]
+        yS = ySrc[srcNo]
+        azS = azSrc[srcNo]
+
+        phaseH = phaseHAll[srcNo, :][:, None, None]
+        phaseV = phaseVAll[srcNo, :][:, None, None]
+        sS = np.sin(azS)
+        cS = np.cos(azS)
+
+        dx = xGrid - xS
+        dy = yGrid - yS
+        dist = np.sqrt(dx * dx + dy * dy)
+        dist_safe = np.maximum(dist, 1e-12)
+
+        sinV = (dx / dist_safe)[None, :]
+        cosV = (dy / dist_safe)[None, :]
+        sinH = sinV * cS - cosV * sS
+        cosH = cosV * cS + sinV * sS
+
+        dist_clip = np.clip(dist_safe, distVec[0], distVec[-1])
+        idx_hi = np.searchsorted(distVec, dist_clip, side="right")
+        idx_hi = np.clip(idx_hi, 1, len(distVec) - 1)
+        idx_lo = idx_hi - 1
+
+        den = distVec[idx_hi] - distVec[idx_lo]
+        den_safe = np.maximum(den, 1e-12)
+        w = (dist_clip - distVec[idx_lo]) / den_safe
+        w = np.clip(w, 0.0, 1.0)
+        w = w[None, :, None]
+
+        G_lo = xxWFFT_sel[:, idx_lo, :]
+        G_hi = xxWFFT_sel[:, idx_hi, :]
+        G_interp = (1 - w) * G_lo + w * G_hi
+
+        xxInterpH = G_interp * phaseH
+        xxInterpV = G_interp * phaseV
+
+        Hx = xxInterpH[:, :, 1] * sinH + (-xxInterpH[:, :, 2]) * cosH
+        Hy = xxInterpH[:, :, 1] * cosH - (-xxInterpH[:, :, 2]) * sinH
+        Hz = -xxInterpH[:, :, 0]
+
+        Vx = xxInterpV[:, :, 4] * sinV
+        Vy = xxInterpV[:, :, 4] * cosV
+        Vz = -xxInterpV[:, :, 3]
+
+        localTotal[:,0:1,0] += (Hx + Vx)
+        localTotal[:,0:1,1] += (Hy + Vy)
+        localTotal[:,0:1, 2] += (Hz + Vz)
+
+    # not returning localPtt and local Ptr anymore
+    return localTotal
+
+def worker_procF(worker_id, rec_start, rec_end, xxWFFT_sel, distVec, xGrid, yGrid, itmAC, xSrc, ySrc, azSrc,
                  phaseVAll, phaseHAll, nFreq, chunk_size, saveHV=False, reduceNN=False, nnMode=None,
                  nnMeta=None):
     """
@@ -682,7 +822,7 @@ def worker_procF(worker_id, rec_start, rec_end, xxWFFT_sel, distVec, xGrid, yGri
 
     # local accumulation only in RAM
     localTotal = np.zeros((nFreq, nRec_w, 3), dtype=np.complex128)
-
+    
     if saveHV:
         localH = np.zeros((nFreq, nRec_w, 3), dtype=np.complex128)
         localV = np.zeros((nFreq, nRec_w, 3), dtype=np.complex128)
@@ -776,7 +916,7 @@ def worker_procF(worker_id, rec_start, rec_end, xxWFFT_sel, distVec, xGrid, yGri
         raise ValueError("reduceNN=True but nnMeta is None")
 
     nnMeta_local = slice_nn_meta(nnMeta, rec_start, rec_end)
-    return reduce_nn_chunk(localTotal, nnMode, nnMeta_local)
+    return reduce_nn_chunk(localTotal, nnMode, nnMeta_local, itmAC)
 
 def slice_nn_meta(nnMeta, rec_start, rec_end):
     """
@@ -803,7 +943,7 @@ def slice_nn_meta(nnMeta, rec_start, rec_end):
     return nnMeta_local
 
 
-def reduce_nn_chunk(localTotal, nnMode, nnMeta_local):
+def reduce_nn_chunk(localTotal, nnMode, nnMeta_local, itmAC):
     """
     Reduce one worker-local displacement chunk to one partial NN contribution.
 
@@ -822,18 +962,18 @@ def reduce_nn_chunk(localTotal, nnMode, nnMeta_local):
     """
     if nnMode == "volume":
         
-        return NNCompute.getVolNN_chunk(localTotal, nnMeta_local["rVec"], nnMeta_local["zCav"],
-                                        nnMeta_local["rho"], nnMeta_local["dV"])
+        return NNCompute.getVolNN_chunk_multiTM(localTotal, nnMeta_local["rVec"],
+                                        nnMeta_local["rho"], nnMeta_local["dV"], itmAC)
 
     elif nnMode == "vert_surface":
         
-        return NNCompute.computeVertSurfNN(localTotal, nnMeta_local["rVec"], nnMeta_local["zCav"],
-                                           nnMeta_local["n_hat"], nnMeta_local["dS"])
+        return NNCompute.computeVertSurfNN_multiTM(localTotal, nnMeta_local["rVec"],
+                                           nnMeta_local["n_hat"], nnMeta_local["dS"], itmAC)
 
     elif nnMode == "hor_surface":
         
-        return NNCompute.computeVertSurfNN(localTotal,nnMeta_local["rVec"], nnMeta_local["zCav"],
-                                           nnMeta_local["n_hat"], nnMeta_local["dS"])
+        return NNCompute.computeVertSurfNN_multiTM(localTotal,nnMeta_local["rVec"],
+                                           nnMeta_local["n_hat"], nnMeta_local["dS"], itmAC)
 
     else:
         raise ValueError(f"Unknown nnMode={nnMode!r}")
@@ -1038,7 +1178,7 @@ def simFixedDepth_partition_receiversN(xxW, tVec, distVec, xGrid, yGrid, xSrc, y
         raise ValueError("strategy must be 'loky_sharedmem'")
 
 
-def simFixedDepth_partition_receiversF(xxWFFT, distVec, xGrid, yGrid, zTar, xSrc, ySrc, azSrc, srcMeta,
+def simFixedDepth_partition_receiversF(xxWFFT, distVec, xGrid, yGrid, itmAC, zTar, xSrc, ySrc, azSrc, srcMeta,
                                        chunk_size, outDir=None, n_workers=None, freqOut=None, saveHV=False,
                                        computeStrategy="loky_sharedmem", reduceNN=False, nnMode=None, nnMeta=None):
     """
@@ -1103,6 +1243,8 @@ def simFixedDepth_partition_receiversF(xxWFFT, distVec, xGrid, yGrid, zTar, xSrc
     nFreq, nDist, nComp = xxWFFT.shape
     nRec = len(xGrid)
     nSrc = len(xSrc)
+    itmAC = np.atleast_2d(itmAC)
+    nTM = len(itmAC[:,0])
 
     if nRec == 0:
         raise ValueError("No receivers in grid.")
@@ -1121,7 +1263,7 @@ def simFixedDepth_partition_receiversF(xxWFFT, distVec, xGrid, yGrid, zTar, xSrc
     else:
         if outDir is None:
             raise ValueError("outDir must be provided in displacement mode")
-        os.makedirs(outDir, exist_ok=True)
+        #os.makedirs(outDir, exist_ok=True)
 
     # Decide worker count + contiguous ranges
     n_workers_eff = choose_workers(nRec, n_workers, min_rec_per_worker=150)
@@ -1143,13 +1285,13 @@ def simFixedDepth_partition_receiversF(xxWFFT, distVec, xGrid, yGrid, zTar, xSrc
         # Each worker returns a partial NN contribution of shape (nFreq, 3).
 
         results = Parallel(n_jobs=n_workers_eff, backend="loky")(
-            delayed(worker_procF)(worker_id, rec_start, rec_end,xxWFFT, distVec, xGrid, yGrid,
+            delayed(worker_procF)(worker_id, rec_start, rec_end,xxWFFT, distVec, xGrid, yGrid, itmAC,
                                   xSrc, ySrc, azSrc, phaseV_all, phaseH_all, nFreq, chunk_size,
                                   saveHV=False, reduceNN=True, nnMode=nnMode,nnMeta=nnMeta)
             for worker_id, (rec_start, rec_end) in enumerate(worker_ranges)
         )
 
-        I_total = np.zeros((nFreq, 3), dtype=np.complex128)
+        I_total = np.zeros((nFreq, 3, nTM), dtype=np.complex128)
         for res in results:
             I_total += res
 
@@ -1193,17 +1335,26 @@ def simFixedDepth_partition_receiversF(xxWFFT, distVec, xGrid, yGrid, zTar, xSrc
             dispH = dispV = None
             dispH_path = dispV_path = None
 
-        Parallel(n_jobs=n_workers_eff, backend="loky")(
-            delayed(worker_proc_loky_sharedout)(
-                worker_id, rec_start, rec_end,
-                xxWFFT, distVec, xGrid, yGrid,
-                xSrc, ySrc, azSrc, phaseV_all, phaseH_all,
-                nFreq, chunk_size,
-                dispTotal_path, disp_shape, disp_dtype_str,
-                saveHV, dispH_path, dispV_path
-            )
-            for worker_id, (rec_start, rec_end) in enumerate(worker_ranges)
-        )
+            # not returning worker_results anymore, set back to return True for success
+            Parallel(n_jobs=n_workers_eff, backend="loky")(
+                delayed(worker_proc_loky_sharedout)(
+                    worker_id, rec_start, rec_end,
+                    xxWFFT, distVec, xGrid, yGrid,
+                    xSrc, ySrc, azSrc, phaseV_all, phaseH_all,
+                    nFreq, chunk_size,
+                    dispTotal_path, disp_shape, disp_dtype_str,
+                    saveHV, dispH_path, dispV_path
+                    )
+                    for worker_id, (rec_start, rec_end) in enumerate(worker_ranges)
+                    )
+            # no correlation coefficient accumulation anymore
+            #localPtr = np.zeros((nFreq,), dtype=np.float64)
+            #localPtt = np.zeros((nFreq,), dtype=np.float64)
+
+            # no need to unpack the correlation weights
+            #for ptr_w, ptt_w in worker_results:
+            #    localPtr += ptr_w
+            #    localPtt += ptt_w
 
         dispTotal.flush()
         dispTotal_r = np.memmap(
@@ -1220,7 +1371,7 @@ def simFixedDepth_partition_receiversF(xxWFFT, distVec, xGrid, yGrid, zTar, xSrc
             dispV_r = np.memmap(
                 dispV_path, dtype=disp_dtype, mode="r", shape=disp_shape
             )
-
+            os.makedirs(outDir, exist_ok=True)
             # keep the grid sidecar only in displacement mode
             np.savez(
                 os.path.join(outDir, "receiverGrid.npz"),
@@ -1229,11 +1380,12 @@ def simFixedDepth_partition_receiversF(xxWFFT, distVec, xGrid, yGrid, zTar, xSrc
 
             return dispH_r, dispV_r, dispTotal_r, freqOut, [dispTotal_path, dispH_path, dispV_path]
 
-        np.savez(
-            os.path.join(outDir, "receiverGrid.npz"),
-            xGrid=xGrid, yGrid=yGrid, zTar=zTar, nFreq=nFreq, freqOut=freqOut
-        )
+        #np.savez(
+        #    os.path.join(outDir, "receiverGrid.npz"),
+        #    xGrid=xGrid, yGrid=yGrid, zTar=zTar, nFreq=nFreq, freqOut=freqOut
+        #)
 
+        # return set to the old version
         return dispTotal_r, freqOut, [dispTotal_path]
 
     else:
@@ -1684,6 +1836,40 @@ def getSurfDeepRayDispPerRea(zList, azSrc, phiSrc, ampSrc, outReaPath, reaNo, vR
     np.savez(os.path.join(outReaPath, sName), dispPointFull=dispPointFull, freqOut=freqOut)
     return dispPointFull, freqOut
 
+def getSurfDeepRayDispPerReaMultiPoint(zList, itmAll, azSrc, phiSrc, ampSrc, outReaPath, reaNo, vR, vP, vS, freqOut=None):
+    """
+    this script will be run before every realization
+    for a particular source distribution which is fixed per realization
+    it will compute the Rayleigh wave displacement at point (0,0) on the surface and at depth
+    specified by zList
+    
+    """
+    nSrc = len(azSrc)
+    gridX = np.asarray(itmAll[:,0]); gridY = np.asarray(itmAll[:,1])
+
+    nRec = len(gridX)
+    nFreq = len(freqOut)
+    zLen = len(zList)
+    
+    dispPointFull = np.zeros((nFreq,nRec,3,zLen))
+    
+    for zNo, zVal in enumerate(zList):
+        # run computeRayleighDisp
+        if(zVal>0):
+            zValUse = -zVal
+        else:
+            zValUse = zVal
+
+        U = computeRayleighDisp(zValUse, gridX, gridY, nSrc, freqOut, azSrc, phiSrc, ampSrc, vR, vP, vS)
+
+        dispPointFull[:,:,:,zNo] = np.abs(U[:,:,:])
+
+    # save this in the rea path, to be read in again after all realizations have been done
+    # to scale the outputNN
+    sName = 'surfDeepDispRea' + str(reaNo) + '.npz'
+    np.savez(os.path.join(outReaPath, sName), dispPointFull=dispPointFull, freqOut=freqOut)
+    return dispPointFull, freqOut
+
 def computeFullBodyDisp(z, xVec, yVec, nSrc, freqVec, vp, vs, meta):
     """
     Superpose random plane P-waves and S-waves in a homogeneous medium (frequency domain).
@@ -1910,6 +2096,36 @@ def getSurfDeepBodyDispPerRea(zList, meta, outReaPath, reaNo, vP, vS, freqOut=No
         U = computeFullBodyDisp(zVal, gridX, gridY, nSrc, freqOut, vP, vS, meta)
 
         dispPointFull[:,:,zNo] = np.abs(U[:,0,:])
+
+    # save this in the rea path, to be read in again after all realizations have been done
+    # to scale the outputNN
+    sName = 'surfDeepDispRea' + str(reaNo) + '.npz'
+    np.savez(os.path.join(outReaPath, sName), dispPointFull=dispPointFull, freqOut=freqOut)
+    return dispPointFull, freqOut
+
+def getSurfDeepBodyDispPerReaMultiPoint(zList, itmAll, meta, outReaPath, reaNo, vP, vS, freqOut=None):
+    """
+    this script will be run before every realization
+    for a particular source distribution which is fixed per realization
+    it will compute the Rayleigh wave displacement at point desired points on the surface and at depth
+    specified by zList
+    z, itmAll, xVec, yVec, nSrc, freqVec, vp, vs, meta
+    """
+    
+    nSrc = len(meta["thetaP"])
+    gridX = np.asarray(itmAll[:,0]); gridY = np.asarray(itmAll[:,1])
+    nRec = len(gridX)
+    nFreq = len(freqOut)
+    zLen = len(zList)
+    
+    dispPointFull = np.zeros((nFreq,nRec,3,zLen))
+    
+    for zNo, zVal in enumerate(zList):
+        # run computeFullBodyDisp
+
+        U = computeFullBodyDisp(zVal, gridX, gridY, nSrc, freqOut, vP, vS, meta)
+
+        dispPointFull[:,:,:,zNo] = np.abs(U[:,:,:])
 
     # save this in the rea path, to be read in again after all realizations have been done
     # to scale the outputNN

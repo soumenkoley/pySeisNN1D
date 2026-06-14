@@ -14,14 +14,23 @@ def main():
     outDir = '/data/gravwav/koley/OutDisp/Depth0p00/'
     plotDispSpect(outDir,xP,yP)
 
-def set_plot_style(labelsize=16, ticksize=14, legendsize=12, titlesize=16):
+def set_plot_style(style="default"):
+    styles = {
+        "default": dict(labelsize=18, ticksize=16, legendsize=16, titlesize=18),
+        "small":   dict(labelsize=14, ticksize=12, legendsize=12, titlesize=14),
+        "medium":  dict(labelsize=16, ticksize=14, legendsize=14, titlesize=16),
+        "large":   dict(labelsize=18, ticksize=16, legendsize=16, titlesize=18),
+    }
+
+    s = styles[style]
+
     mpl.rcParams.update({
-        "axes.labelsize": labelsize,
-        "xtick.labelsize": ticksize,
-        "ytick.labelsize": ticksize,
-        "legend.fontsize": legendsize,
-        "axes.titlesize": titlesize,
-        "figure.titlesize": titlesize,
+        "axes.labelsize": s["labelsize"],
+        "xtick.labelsize": s["ticksize"],
+        "ytick.labelsize": s["ticksize"],
+        "legend.fontsize": s["legendsize"],
+        "axes.titlesize": s["titlesize"],
+        "figure.titlesize": s["titlesize"],
     })
 
 def plotPSDDeepSurfMulti(freq, data, depth_label, color, fig=None, axs=None, quantity="ASD",subFigs=3):
@@ -191,6 +200,41 @@ def plotAttn(freqOut, attnSim, attnX, attnY, attnZ,
 
     fig.tight_layout(rect=[0, 0, 0.98, 0.95])
     return fig, axes
+
+def plotNullStreamET(fNN, nnITFSum, nullITF, ETD, fig = None, axs = None):
+    # plots the null stream and sum of individual itf output on a same plot with
+    # ETD
+    fNN = np.asarray(fNN).ravel()
+    ETD = np.asarray(ETD)
+    
+    if fig is None or axs is None:
+        fig, axs = plt.subplots(figsize=(8, 4), sharex=True, sharey=True)
+    
+    axs.plot(ETD[:, 0], ETD[:, 1], linewidth=1.8, label='ETD')
+    axs.plot(ETD[:,0], 2*ETD[:,1], 'k--', linewidth=1.8, label='2*ETD')
+    axs.plot(ETD[:,0], 5*ETD[:,1], 'k--', linewidth=1.8, label='5*ETD')
+    axs.plot(fNN, nnITFSum,'r', label = r'$\sqrt{|h_A|^2 + |h_B|^2 + |h_C|^2}$')
+    axs.plot(fNN, nullITF, 'g', label = r'$h_{null}$')
+
+    axs.set_xscale("log")
+    axs.set_yscale("log")
+    # only show these major ticks
+    axs.set_xticks([1, 2, 4, 8])
+    axs.xaxis.set_major_formatter(mticker.FormatStrFormatter('%g'))
+
+    # keep minor ticks (optional) but hide their labels
+    axs.xaxis.set_minor_locator(mticker.LogLocator(base=10, subs=np.arange(2, 10)*0.1))
+    axs.xaxis.set_minor_formatter(mticker.NullFormatter())
+        
+    axs.set_xlabel("Frequency (Hz)")
+    axs.set_ylabel("Strain / √Hz")
+
+    axs.grid(True, which="both", alpha=0.3)
+
+    axs.legend(frameon=True)
+    axs.set_xlim(1,8)
+    #fig.tight_layout(rect=[0, 0, 0.98, 0.92])
+    return fig, axs
 
 def plotNNStrainET(fNN, nnProj, ETD, title="Projected NN strain ASD", xlim=(1, 8), xscale="log",
                    yscale="log", comp_labels=("X", "Y", "Z"), sim_label="Simulated", etd_label="ET-D",
@@ -571,6 +615,81 @@ def findRecIndex(x1, y1, xGrid, yGrid, xVec=None, yVec=None):
     
     return rec_index, dist[rec_index]
     
+def plotITFNullCC(ccITFANull, ccITFBNull, ccITFCNull, freqOut, figCC=None, axCC=None):
+    if figCC is None or axCC is None:
+        figCC, axCC = plt.subplots(1, 3, figsize=(16, 6), sharey=True,constrained_layout=True)
+        component_titles = ["(a) ITF A - Null stream", "(b) ITF B - Null stream", "(c) ITF C - Null Stream"]
+        for i, ax in enumerate(axCC):
+            ax.set_title(component_titles[i])
+            ax.set_xlabel("Frequency (Hz)")
+            if(i==0):
+                ax.set_ylabel('cross-correlation')
+            ax.grid(True)
+    
+    axCC[0].plot(freqOut, np.real(ccITFANull), color='b', label='real')
+    axCC[0].plot(freqOut, np.imag(ccITFANull), color='r', label='imaginary')
+    axCC[0].plot(freqOut, 1/np.sqrt(3)*np.ones((len(freqOut),)),'k', label = r'$\frac{1}{\sqrt{3}}$')
+    axCC[0].legend(loc="lower right")
+    axCC[0].set_ylim(-1,1)
 
+    axCC[1].plot(freqOut, np.real(ccITFBNull), color='b', label='real')
+    axCC[1].plot(freqOut, np.imag(ccITFBNull), color='r', label='imaginary')
+    axCC[1].plot(freqOut, 1/np.sqrt(3)*np.ones((len(freqOut),)),'k', label = r'$\frac{1}{\sqrt{3}}$')
+    axCC[1].legend(loc="lower right")
+    axCC[1].set_ylim(-1,1)
+
+    axCC[2].plot(freqOut, np.real(ccITFCNull), color='b', label='real')
+    axCC[2].plot(freqOut, np.imag(ccITFCNull), color='r', label='imaginary')
+    axCC[2].plot(freqOut, 1/np.sqrt(3)*np.ones((len(freqOut),)),'k', label = r'$\frac{1}{\sqrt{3}}$')
+    axCC[2].legend(loc="lower right")
+    axCC[2].set_ylim(-1,1)
+
+    return figCC, axCC
+
+def plotITF_A_B_C_CC(ccITFAB, ccITFAC, freqOut, figCC=None, axCC=None):
+    if figCC is None or axCC is None:
+        figCC, axCC = plt.subplots(1, 2, figsize=(10, 4), sharey=True, constrained_layout=True)
+        component_titles = ["(a) ITF A - ITF B", "(b) ITF A - ITF C"]
+        for i, ax in enumerate(axCC):
+            ax.set_title(component_titles[i])
+            ax.set_xlabel("Frequency (Hz)")
+            if(i==0):
+                ax.set_ylabel('cross-correlation')
+            ax.grid(True)
+    axCC[0].plot(freqOut, np.real(ccITFAB), color='b', label='real')
+    axCC[0].plot(freqOut, np.imag(ccITFAC), color='r', label='imaginary')  
+    axCC[0].plot(freqOut, 1/np.sqrt(100)*np.ones((len(freqOut),)), 'k--', label = 'crosscorr significance')
+    axCC[0].plot(freqOut, -1/np.sqrt(100)*np.ones((len(freqOut),)), 'k--')
+    
+    axCC[0].legend(loc="lower right")
+    axCC[0].set_ylim(-1,1)
+
+    axCC[1].plot(freqOut, np.real(ccITFAC), color='b', label='real')
+    axCC[1].plot(freqOut, np.imag(ccITFAC), color='r', label='imaginary')
+    axCC[1].plot(freqOut, 1/np.sqrt(100)*np.ones((len(freqOut),)), 'k--', label = 'crosscorr significance')
+    axCC[1].plot(freqOut, -1/np.sqrt(100)*np.ones((len(freqOut),)), 'k--')
+    
+    axCC[1].legend(loc="lower right")
+    axCC[1].set_ylim(-1,1)
+
+    return figCC, axCC
+
+def plotSingleITF(allTMLoc, fig, ax, colVal):
+    for i in range(0,4):
+        ax.plot(allTMLoc[i,0],allTMLoc[i,1], color = colVal, marker='o')
+    # plot lines joining the input and end test-masses
+    plotLine(allTMLoc[0,0:2], allTMLoc[2,0:2], ax, colVal)
+    plotLine(allTMLoc[1,0:2], allTMLoc[3,0:2], ax, colVal)
+    return ax
+
+def plotLine(pointA, pointB, ax, colVal):
+    x = np.zeros((2,))
+    y = np.zeros((2,))
+    x[0] = pointA[0]
+    x[1] = pointB[0]
+    y[0] = pointA[1]
+    y[1] = pointB[1]
+
+    ax.plot(x,y,color=colVal)
 if __name__ == "__main__":
     main()

@@ -32,13 +32,19 @@ class Config:
         self.xMaxGF = float(cfg['geometry']['xmax_gf'])
         self.zMaxGF = float(cfg['geometry']['zmax_gf'])
         self.maxRec = int(cfg['geometry']['max_receivers'])
+        self.xCenter = float(cfg['geometry']['x_center'])
+        self.yCenter = float(cfg['geometry']['y_center'])
         self.xExtent = float(cfg['geometry']['x_extent'])
         self.yExtent = float(cfg['geometry']['y_extent'])
         self.zExtent = float(cfg['geometry']['z_extent'])
-        self.cavityDepth = float(cfg['geometry']['cavity_depth'])
-        self.cavityRadius = float(cfg['geometry']['cavity_radius'])
         self.tMax = float(cfg['geometry']['t_max'])
         self.nSamp = int(cfg['geometry']['n_samp'])
+        self.cavityType = str(cfg['geometry']['cavity_type'])
+
+        self.itmAC = arr(cfg['tmPosition']['itm_ac'])
+        self.itmAB = arr(cfg['tmPosition']['itm_ab'])
+        self.etmCA = arr(cfg['tmPosition']['etm_ca'])
+        self.etmBA = arr(cfg['tmPosition']['etm_ba'])
 
         self.nRea = int(cfg['simSource']['n_rea'])
         self.R1 = float(cfg['simSource']['r_1'])
@@ -75,3 +81,39 @@ def load_config(path="configParse.ini"):
     global CONFIG
     CONFIG = Config(path)
     return CONFIG
+
+def loadCavities(filename):
+    config = configparser.ConfigParser()
+    config.optionxform = str   # preserve key case
+    config.read(filename)
+
+    allCavities = []
+
+    for section in config.sections():
+        cav = {"name": section}
+
+        for key, value in config[section].items():
+            if key == "shape":
+                cav[key] = value
+            else:
+                try:
+                    cav[key] = float(value)
+                except ValueError:
+                    cav[key] = value
+
+        shape = cav["shape"].lower()
+
+        if shape == "cuboid":
+            required = ["xC", "yC", "zC", "length", "breadth", "height", "angleDeg","xRefineFactor","yRefineFactor","zRefineFactor"]
+        elif shape == "sphere":
+            required = ["xC", "yC", "zC", "radius","xRefineFactor","yRefineFactor","zRefineFactor"]
+        else:
+            raise ValueError(f"Unsupported shape in section {section}: {cav['shape']}")
+
+        for key in required:
+            if key not in cav:
+                raise ValueError(f"Section {section} missing required key '{key}'")
+
+        allCavities.append(cav)
+
+    return allCavities

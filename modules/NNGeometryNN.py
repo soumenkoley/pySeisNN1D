@@ -3,6 +3,7 @@
 
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle, Circle, Polygon
 
 def main():
     # Define the velocity model in km and km/s
@@ -64,7 +65,6 @@ def main():
             for f in blk.horizontalFaces:
                 print("   ", f);
     """
-    
 
 class VerticalFace:
     def __init__(self, axis, position, xLim, yLim, zLim, rhoOut, domainBounds = None, isBoundary=False):
@@ -265,6 +265,258 @@ class Block:
         return (f"<Block x:[{self.xMin},{self.xMax}], y:[{self.yMin},{self.yMax}], "
                 f"z:[{self.zMin},{self.zMax}] spaceT:[{self.spaceType}] intpType:[{self.interpType}] >")
 
+class RefineBox:
+    """
+    Axis-aligned refinement box used for block generation.
+
+    This is not the true cavity geometry.
+    It is the rectangular refinement region around a cavity or merged cavities.
+    """
+
+    def __init__(self, xC, yC, zC, ax, ay, az, sourceNames=None):
+        self.xC = xC
+        self.yC = yC
+        self.zC = zC
+        self.ax = ax
+        self.ay = ay
+        self.az = az
+        self.sourceNames = sourceNames[:] if sourceNames is not None else []
+
+    @property
+    def xMin(self):
+        return self.xC - self.ax
+
+    @property
+    def xMax(self):
+        return self.xC + self.ax
+
+    @property
+    def yMin(self):
+        return self.yC - self.ay
+
+    @property
+    def yMax(self):
+        return self.yC + self.ay
+
+    @property
+    def zMin(self):
+        return self.zC - self.az
+
+    @property
+    def zMax(self):
+        return self.zC + self.az
+
+    def intersectsLayer(self, zTop, zBot, tol=1e-9):
+        return not (self.zMax <= zTop + tol or self.zMin >= zBot - tol)
+
+    def __repr__(self):
+        src = ",".join(self.sourceNames) if self.sourceNames else "None"
+        return (f"<RefineBox x:[{self.xMin},{self.xMax}], "
+                f"y:[{self.yMin},{self.yMax}], "
+                f"z:[{self.zMin},{self.zMax}], "
+                f"sources:[{src}]>")
+
+def makeSphereRefineBox(xC, yC, zC, rCavity, zRefineFactor=2.0, xRefineFactor=2.0, yRefineFactor=2.0,
+                        name="sphere"):
+    """
+    Build a refinement box around a spherical cavity.
+
+    True sphere radius = rCavity
+    Refinement half-widths:
+        ax = xyRefineFactor * rCavity
+        ay = xyRefineFactor * rCavity
+        az = zRefineFactor  * rCavity
+    """
+    ax = xRefineFactor * rCavity
+    ay = yRefineFactor * rCavity
+    az = zRefineFactor * rCavity
+    return RefineBox(xC=xC, yC=yC, zC=zC, ax=ax, ay=ay, az=az, sourceNames=[name])
+
+
+def makeCuboidRefineBox(xC, yC, zC, length, breadth, height, angleDeg=0.0,
+                        zRefineFactor=2.0, xRefineFactor=1.0, yRefineFactor=1.0,name="cuboid"):
+    """
+    Build an axis-aligned refinement box around a cuboid cavity.
+
+    Strategy
+    --------
+    1. Compute the physical rotated rectangle footprint in x-y.
+    2. Compute the smallest axis-aligned bounding rectangle containing it.
+    3. Apply xyRefineFactor to that bounding rectangle.
+    4. Use zRefineFactor only in z.
+
+    Parameters
+    ----------
+    xC, yC, zC : float
+        Cuboid center coordinates.
+    length : float
+        Cuboid length in local major axis.
+    breadth : float
+        Cuboid breadth in local minor axis.
+    height : float
+        Cuboid height in z.
+    angleDeg : float
+        Rotation angle anticlockwise from global x-axis.
+    zRefineFactor : float
+        Refinement factor in z relative to physical half-height.
+    xyRefineFactor : float
+        Refinement factor applied to the axis-aligned bounding rectangle
+        of the rotated footprint.
+    name : str
+        Source name stored in the box.
+    """
+    theta = np.deg2rad(angleDeg)
+
+    # local axes in x-y
+    u = np.array([np.cos(theta), np.sin(theta)])
+    v = np.array([-np.sin(theta), np.cos(theta)])
+
+    # physical half-sizes of the cuboid footprint
+    hl = 0.5 * length
+    hb = 0.5 * breadth
+    hz = 0.5 * height * zRefineFactor
+
+    if((hz-0.5*height)>100 or (hz-0.5*height)<=100):
+        hz = 100 + 0.5*height
+
+    # physical rotated footprint corners
+    corners = [
+        np.array([xC, yC]) - hl*u - hb*v,
+        np.array([xC, yC]) - hl*u + hb*v,
+        np.array([xC, yC]) + hl*u + hb*v,
+        np.array([xC, yC]) + hl*u - hb*v,
+    ]
+
+    xs = [p[0] for p in corners]
+    ys = [p[1] for p in corners]
+
+    # smallest axis-aligned bounding rectangle of physical footprint
+    xMin_phys = min(xs)
+    xMax_phys = max(xs)
+    yMin_phys = min(ys)
+    yMax_phys = max(ys)
+
+    ax_bbox = 0.5 * (xMax_phys - xMin_phys)
+    ay_bbox = 0.5 * (yMax_phys - yMin_phys)
+
+    # apply refinement factor AFTER bounding box construction
+    ax_ref = xRefineFactor * ax_bbox
+    ay_ref = yRefineFactor * ay_bbox
+
+    # set a hard cut of not more than 100 meters from the outer edge
+    if((ax_ref - ax_bbox)>100 or (ax_ref - ax_bbox)<=100):
+        ax_ref = 100 + ax_bbox
+
+    if((ay_ref - ay_bbox)>100 or (ay_ref - ay_bbox)<=100):
+        ay_ref = 100 + ay_bbox
+
+    return RefineBox(
+        xC=xC,
+        yC=yC,
+        zC=zC,
+        ax=ax_ref,
+        ay=ay_ref,
+        az=hz,
+        sourceNames=[name]
+    )
+
+def boxesOverlapOrCloseXY(box1, box2, tol=0.0):
+    """
+    Check overlap / near-overlap in x-y only.
+    """
+    xSep = max(box1.xMin, box2.xMin) - min(box1.xMax, box2.xMax)
+    ySep = max(box1.yMin, box2.yMin) - min(box1.yMax, box2.yMax)
+    return (xSep <= tol) and (ySep <= tol)
+
+
+def mergeTwoRefineBoxes(box1, box2):
+    xMin = min(box1.xMin, box2.xMin)
+    xMax = max(box1.xMax, box2.xMax)
+    yMin = min(box1.yMin, box2.yMin)
+    yMax = max(box1.yMax, box2.yMax)
+    zMin = min(box1.zMin, box2.zMin)
+    zMax = max(box1.zMax, box2.zMax)
+
+    xC = 0.5 * (xMin + xMax)
+    yC = 0.5 * (yMin + yMax)
+    zC = 0.5 * (zMin + zMax)
+
+    ax = 0.5 * (xMax - xMin)
+    ay = 0.5 * (yMax - yMin)
+    az = 0.5 * (zMax - zMin)
+
+    names = sorted(set(box1.sourceNames + box2.sourceNames))
+
+    return RefineBox(xC=xC, yC=yC, zC=zC, ax=ax, ay=ay, az=az, sourceNames=names)
+
+
+def mergeRefineBoxes(boxes, xyTol=0.0):
+    """
+    Merge boxes that overlap or are closer than xyTol in x-y.
+    """
+    if len(boxes) == 0:
+        return []
+
+    working = boxes[:]
+    changed = True
+
+    while changed:
+        changed = False
+        used = [False] * len(working)
+        merged = []
+
+        for i in range(len(working)):
+            if used[i]:
+                continue
+
+            cur = working[i]
+            used[i] = True
+
+            again = True
+            while again:
+                again = False
+                for j in range(len(working)):
+                    if used[j]:
+                        continue
+                    if boxesOverlapOrCloseXY(cur, working[j], tol=xyTol):
+                        cur = mergeTwoRefineBoxes(cur, working[j])
+                        used[j] = True
+                        again = True
+                        changed = True
+
+            merged.append(cur)
+
+        working = merged
+
+    return working
+def getEnclosingRefineBox(refineBoxes, layer, name="mergedBox"):
+    """
+    Build one enclosing RefineBox from all boxes that intersect this layer.
+
+    The returned box is clipped in z only through its center/half-width definition;
+    the actual layer/block clipping is still handled in generateBlocks.
+    """
+    active = [b for b in refineBoxes if b.intersectsLayer(layer.zTop, layer.zBot)]
+
+    if len(active) == 0:
+        return None
+
+    xMin = min(b.xMin for b in active)
+    xMax = max(b.xMax for b in active)
+    yMin = min(b.yMin for b in active)
+    yMax = max(b.yMax for b in active)
+    zMin = min(b.zMin for b in active)
+    zMax = max(b.zMax for b in active)
+
+    xC = 0.5 * (xMin + xMax)
+    yC = 0.5 * (yMin + yMax)
+    zC = 0.5 * (zMin + zMax)
+
+    ax = 0.5 * (xMax - xMin)
+    ay = 0.5 * (yMax - yMin)
+    az = 0.5 * (zMax - zMin)
+
+    return RefineBox(xC=xC, yC=yC, zC=zC, ax=ax, ay=ay, az=az, sourceNames=[name])
 
 class Layer:
     def __init__(self, xMin, xMax, yMin, yMax, zTop, zBot, vP, vS, rho):
@@ -495,14 +747,350 @@ class Layer:
                     block.buildHorizontalFaces()
                     self.blocks.append(block)
 
+    def generateBlocksNew(self, refineBoxes, domXYBounds, domainZBounds=None):
+        """
+        Generate blocks for this layer from a list of cavity-derived RefineBox objects.
+
+        Logic
+        -----
+        1. Find refine boxes active in this layer.
+        2. Replace them by one enclosing central refine box.
+        3. Apply the old NNGeometryN 3x3 x-y logic around that one box.
+        4. Keep old z intersection logic:
+             - no_intersection -> 1 block
+            - contains       -> 11 blocks
+            - cut_top        -> 10 blocks
+            - cut_bottom     -> 10 blocks
+            - cut_middle     -> 9 blocks
+
+        Notes
+        -----
+        - The layer intersection type (self.intersectionType) is still assumed to have
+        been set by updateCubeInteraction(cubeTop, cubeBot) beforehand.
+        - The central hosting region is treated as 'uniform' for now.
+        """
+        self.blocks = []
+
+        if domainZBounds is None:
+            domainZBounds = (self.zTop, self.zBot)
+
+        # full layer/domain extents in x-y
+        xMin = self.xMin
+        xMax = self.xMax
+        yMin = self.yMin
+        yMax = self.yMax
+
+        # no global cavity-hosting interaction in this layer
+        if self.intersectionType == 'no_intersection':
+            block = Block(
+                xMin=xMin, xMax=xMax,
+                yMin=yMin, yMax=yMax,
+                zMin=self.zTop, zMax=self.zBot,
+                vP=self.vP, vS=self.vS, rho=self.rho,
+                spaceType='lgwt', interpType=1,
+                domainBounds=domXYBounds,
+                domainZBounds=domainZBounds
+            )
+            self.blocks.append(block)
+            self.nBlocks = len(self.blocks)
+            return
+
+        # build one enclosing active refine box for this layer
+        refineBox = getEnclosingRefineBox(refineBoxes, self)
+
+        # if global cubeInteraction says intersecting but no active refine box is found,
+        # fall back to one full-domain lgwt block
+        if refineBox is None:
+            block = Block(
+                xMin=xMin, xMax=xMax,
+                yMin=yMin, yMax=yMax,
+                zMin=self.zTop, zMax=self.zBot,
+                vP=self.vP, vS=self.vS, rho=self.rho,
+                spaceType='lgwt', interpType=1,
+                domainBounds=domXYBounds,
+                domainZBounds=domainZBounds
+            )
+            self.blocks.append(block)
+            self.nBlocks = len(self.blocks)
+            return
+
+        # enclosing box bounds
+        xL, xR = refineBox.xMin, refineBox.xMax
+        yB, yT = refineBox.yMin, refineBox.yMax
+        zL, zU = refineBox.zMin, refineBox.zMax
+
+        # clip x-y box to simulation/layer bounds just in case
+        xL = max(xMin, xL)
+        xR = min(xMax, xR)
+        yB = max(yMin, yB)
+        yT = min(yMax, yT)
+
+        # x-y tiling
+        xIntervals = [(xMin, xL), (xL, xR), (xR, xMax)]
+        yIntervals = [(yMin, yB), (yB, yT), (yT, yMax)]
+
+        # -------------------------
+        # contains
+        # -------------------------
+        if self.intersectionType == 'contains':
+            zIntervals_center = [(self.zTop, zL), (zL, zU), (zU, self.zBot)]
+
+            for ix, (xa, xb) in enumerate(xIntervals):
+                for iy, (ya, yb) in enumerate(yIntervals):
+
+                    if xb <= xa or yb <= ya:
+                        continue
+
+                    is_center = (ix == 1 and iy == 1)
+
+                    if is_center:
+                        for za, zb in zIntervals_center:
+                            if zb <= za:
+                                continue
+
+                            spaceType = 'uniform' if (np.isclose(za, zL) and np.isclose(zb, zU)) else 'lgwt'
+                            interpType = 1 if (np.isclose(za, zL) and np.isclose(zb, zU)) else 2
+
+                            block = Block(
+                                xMin=xa, xMax=xb,
+                                yMin=ya, yMax=yb,
+                                zMin=za, zMax=zb,
+                                vP=self.vP, vS=self.vS, rho=self.rho,
+                                spaceType=spaceType, interpType=interpType,
+                                domainBounds=domXYBounds,
+                                domainZBounds=domainZBounds
+                            )
+                            self.blocks.append(block)
+                    else:
+                        block = Block(
+                            xMin=xa, xMax=xb,
+                            yMin=ya, yMax=yb,
+                            zMin=self.zTop, zMax=self.zBot,
+                            vP=self.vP, vS=self.vS, rho=self.rho,
+                            spaceType='lgwt', interpType=2,
+                            domainBounds=domXYBounds,
+                            domainZBounds=domainZBounds
+                        )
+                        self.blocks.append(block)
+
+            self.nBlocks = len(self.blocks)
+            return
+
+        # -------------------------
+        # cut_top
+        # -------------------------
+        if self.intersectionType == 'cut_top':
+            for ix, (xa, xb) in enumerate(xIntervals):
+                for iy, (ya, yb) in enumerate(yIntervals):
+
+                    if xb <= xa or yb <= ya:
+                        continue
+
+                    is_center = (ix == 1 and iy == 1)
+
+                    if is_center:
+                        zIntervals = [(self.zTop, zL), (zL, self.zBot)]
+
+                        for za, zb in zIntervals:
+                            if zb <= za:
+                                continue
+
+                            spaceType = 'uniform' if np.isclose(za, zL) else 'lgwt'
+                            interpType = 1 if np.isclose(za, zL) else 2
+
+                            block = Block(
+                                xMin=xa, xMax=xb,
+                                yMin=ya, yMax=yb,
+                                zMin=za, zMax=zb,
+                                vP=self.vP, vS=self.vS, rho=self.rho,
+                                spaceType=spaceType, interpType=interpType,
+                                domainBounds=domXYBounds,
+                                domainZBounds=domainZBounds
+                            )
+                            self.blocks.append(block)
+                    else:
+                        block = Block(
+                            xMin=xa, xMax=xb,
+                            yMin=ya, yMax=yb,
+                            zMin=self.zTop, zMax=self.zBot,
+                            vP=self.vP, vS=self.vS, rho=self.rho,
+                            spaceType='lgwt', interpType=2,
+                            domainBounds=domXYBounds,
+                            domainZBounds=domainZBounds
+                        )
+                        self.blocks.append(block)
+
+            self.nBlocks = len(self.blocks)
+            return
+
+        # -------------------------
+        # cut_bottom
+        # -------------------------
+        if self.intersectionType == 'cut_bottom':
+            for ix, (xa, xb) in enumerate(xIntervals):
+                for iy, (ya, yb) in enumerate(yIntervals):
+
+                    if xb <= xa or yb <= ya:
+                        continue
+
+                    is_center = (ix == 1 and iy == 1)
+
+                    if is_center:
+                        zIntervals = [(self.zTop, zU), (zU, self.zBot)]
+
+                        for za, zb in zIntervals:
+                            if zb <= za:
+                                continue
+
+                            spaceType = 'uniform' if np.isclose(zb, zU) else 'lgwt'
+                            interpType = 1 if np.isclose(zb, zU) else 2
+
+                            block = Block(
+                                xMin=xa, xMax=xb,
+                                yMin=ya, yMax=yb,
+                                zMin=za, zMax=zb,
+                                vP=self.vP, vS=self.vS, rho=self.rho,
+                                spaceType=spaceType, interpType=interpType,
+                                domainBounds=domXYBounds,
+                                domainZBounds=domainZBounds
+                            )
+                            self.blocks.append(block)
+                    else:
+                        block = Block(
+                            xMin=xa, xMax=xb,
+                            yMin=ya, yMax=yb,
+                            zMin=self.zTop, zMax=self.zBot,
+                            vP=self.vP, vS=self.vS, rho=self.rho,
+                            spaceType='lgwt', interpType=2,
+                            domainBounds=domXYBounds,
+                            domainZBounds=domainZBounds
+                        )
+                        self.blocks.append(block)
+
+            self.nBlocks = len(self.blocks)
+            return
+
+        # -------------------------
+        # cut_middle
+        # -------------------------
+        if self.intersectionType == 'cut_middle':
+            for ix, (xa, xb) in enumerate(xIntervals):
+                for iy, (ya, yb) in enumerate(yIntervals):
+
+                    if xb <= xa or yb <= ya:
+                        continue
+
+                    is_center = (ix == 1 and iy == 1)
+                    spaceType = 'uniform' if is_center else 'lgwt'
+                    interpType = 1 if is_center else 2
+
+                    block = Block(
+                        xMin=xa, xMax=xb,
+                        yMin=ya, yMax=yb,
+                        zMin=self.zTop, zMax=self.zBot,
+                        vP=self.vP, vS=self.vS, rho=self.rho,
+                        spaceType=spaceType, interpType=interpType,
+                        domainBounds=domXYBounds,
+                        domainZBounds=domainZBounds
+                    )
+                    self.blocks.append(block)
+
+            self.nBlocks = len(self.blocks)
+            return
+
+        # fallback
+        block = Block(
+            xMin=xMin, xMax=xMax,
+            yMin=yMin, yMax=yMax,
+            zMin=self.zTop, zMax=self.zBot,
+            vP=self.vP, vS=self.vS, rho=self.rho,
+            spaceType='lgwt', interpType=1,
+            domainBounds=domXYBounds,
+            domainZBounds=domainZBounds
+        )
+        self.blocks.append(block)
+        self.nBlocks = len(self.blocks)
+    
     def getBlock(self, i):
-        return self.blocks[i];
+        return self.blocks[i]
 
     def __repr__(self):
         return f"<Layer z: {self.zTop}-{self.zBot}, type: {self.intersectionType}, nblocks: {self.nBlocks}>";
         
     def describe(self):
         print(f"Layer {self.zTop} to {self.zBot} with {self.getNBlocks()} blocks");
+
+def makeRefineBoxesFromCavities(allCavities):
+    """
+    Build a list of RefineBox objects from a list of cavity dictionaries.
+
+    Parameters
+    ----------
+    
+    allCavities : list of dict
+        Each cavity dict must contain:
+          Sphere:
+            shape, xC, yC, zC, radius
+          Cuboid:
+            shape, xC, yC, zC, length, breadth, height, angleDeg
+
+        Optionally each cavity may also contain:
+            zRefineFactor
+            xyRefineFactor
+            name
+
+    zRefineFactor : float
+        Default z refinement factor if not specified per cavity.
+    xyRefineFactor : float
+        Default xy refinement factor if not specified per cavity.
+
+    Returns
+    -------
+    refineBoxes : list of RefineBox
+    """
+    refineBoxes = []
+
+    for i, cav in enumerate(allCavities):
+        shape = cav["shape"].lower()
+
+        cav_name = cav.get("name", f"Cavity_{i+1}")
+        cav_zref = cav.get("zRefineFactor")
+        cav_xref = cav.get("xRefineFactor")
+        cav_yref = cav.get("yRefineFactor")
+
+        if shape == "sphere":
+            box = makeSphereRefineBox(
+                xC=cav["xC"],
+                yC=cav["yC"],
+                zC=cav["zC"],
+                rCavity=cav["radius"],
+                zRefineFactor=cav_zref,
+                xRefineFactor=cav_xref,
+                yRefineFactor=cav_yref,
+                name=cav_name
+            )
+
+        elif shape == "cuboid":
+            box = makeCuboidRefineBox(
+                xC=cav["xC"],
+                yC=cav["yC"],
+                zC=cav["zC"],
+                length=cav["length"],
+                breadth=cav["breadth"],
+                height=cav["height"],
+                angleDeg=cav.get("angleDeg", 0.0),
+                zRefineFactor=cav_zref,
+                xRefineFactor=cav_xref,
+                yRefineFactor=cav_yref,
+                name=cav_name
+            )
+
+        else:
+            raise ValueError(f"Unsupported cavity shape: {cav['shape']}")
+
+        refineBoxes.append(box)
+
+    return refineBoxes
 
 def partitionLayers(z_interfaces, vp, vs, rho, cubeTop, cubeBot, max_host_thickness=500.0, tol=1e-9):
     """
