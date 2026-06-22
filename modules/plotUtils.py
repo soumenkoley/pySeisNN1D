@@ -196,7 +196,7 @@ def plotAttn(freqOut, attnSim, attnX, attnY, attnZ,
         ax.grid(True, which="both", alpha=0.3)
 
     handles, labels = axes[0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="upper right", frameon=True)
+    #fig.legend(handles, labels, loc="upper right", frameon=True)
 
     fig.tight_layout(rect=[0, 0, 0.98, 0.95])
     return fig, axes

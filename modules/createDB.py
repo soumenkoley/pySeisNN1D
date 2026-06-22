@@ -429,7 +429,8 @@ def getRecInfo(depths,nX,nY,gridSize,sr):
     
     for i in range(len(nX)):
         zTop, zBot = depths[i], depths[i + 1]
-        dz = gridSize[i]
+        #dz = gridSize[i]
+        dz = (zBot-zTop)/nY[i]
 
         # Discretize current layer
         zLayer = np.arange(zTop, zBot, dz)
@@ -521,7 +522,7 @@ def getNXDP(config):
     
     for i in range(0,(lenNewDepth-1)):
         nPt = round((newDepths[i+1]-newDepths[i])/gridSize[i]);
-        nPtsY[i] = int(nPt);
+        nPtsY[i] = int(max(nPt,3));
         nPt = round(config.xMaxGF/gridSize[i]);
         nPtsX[i] = int(nPt);
     return newDepths,nPtsX,nPtsY,gridSize,sr;

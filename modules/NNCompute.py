@@ -310,7 +310,7 @@ def handleHorSurfNN(layer, layers, block, gridSize, nLayers, i, rhoAir, freqOut,
                 # Top of current layer
                 if i == 0:
                     # Topmost layer → surface (air)
-                    #print('I am in air')
+                    print('I am in air')
                     #rho_eff = rhoAir
                     # this needs to be switched on for free surface
                     rho_eff = layer.rho
@@ -390,8 +390,8 @@ def runHorSurfNNCompute(face, spaceType, gridSize, freqOut, allCavities,
         # the case of the block enclosing the cavity, no lgwt sampliing here
         # adaptive uniform sampling to be done here
         
-        xy_result = generate_adaptive_xy_pointcloud(cavities=allCavities,x_min=face.xMin,x_max=face.xMax,
-                                                    y_min=face.yMin, y_max=face.yMax, dx_inside=1.0,
+        xy_result = generate_adaptive_xy_pointcloud(cavities=allCavities,x_min=face.xLim[0],x_max=face.xLim[1],
+                                                    y_min=face.yLim[0], y_max=face.yLim[1], dx_inside=1.0,
                                                     dy_inside=1.0, dx_near=1.0, dy_near=1.0, dx_mid=2.0,
                                                     dy_mid=2.0, dx_far=5.0, dy_far=5.0, near_frac=1.0/3.0, mid_frac=2.0/3.0,
                                                     near_cap=20.0, mid_cap=20.0, gap_tol=10.0)
@@ -836,7 +836,7 @@ def runVolNNComputeBlock(block, gridSize, freqOut, allCavities, itmAC, xSrc, ySr
         
         zlgwt, zWeightlgwt = make_adaptive_z_axis(block.zMin,block.zMax, cav_zmin, cav_zmax, dz_inside=1.0, dz_near=1.0, dz_mid=2.0,
                          dz_far=5.0, near_width=20.0, mid_width=20.0)
-        
+        print(zlgwt)
         gridX_flat = xy_result["gridX_flat"]
         gridY_flat = xy_result["gridY_flat"]
         gridW_flat = xy_result["gridW_flat"]
@@ -869,7 +869,11 @@ def runVolNNComputeBlock(block, gridSize, freqOut, allCavities, itmAC, xSrc, ySr
             # new version
             mask = mask_points_outside_all_cavities(gridX_flat, gridY_flat, zNow, allCavities)
             # apply mask to geometry and weights
+            rInit = len(rVec)
             rVec = rVec[mask, :]
+            rFin = len(rVec)
+            if(rInit==rFin):
+                print('No cavity removal')
             dV = dV[mask]
             if len(rVec) == 0:
                 print(f"[WARNING] All points removed at z={zNow:.2f} in cavity block — skipping this slice.")
