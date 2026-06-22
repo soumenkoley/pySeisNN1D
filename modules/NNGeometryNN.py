@@ -376,8 +376,8 @@ def makeCuboidRefineBox(xC, yC, zC, length, breadth, height, angleDeg=0.0,
     hb = 0.5 * breadth
     hz = 0.5 * height * zRefineFactor
 
-    if((hz-0.5*height)>150 or (hz-0.5*height)<=150):
-        hz = 150 + 0.5*height
+    if((hz-0.5*height)>100 or (hz-0.5*height)<=100):
+        hz = 100 + 0.5*height
 
     # physical rotated footprint corners
     corners = [
@@ -404,11 +404,11 @@ def makeCuboidRefineBox(xC, yC, zC, length, breadth, height, angleDeg=0.0,
     ay_ref = yRefineFactor * ay_bbox
 
     # set a hard cut of not more than 100 meters from the outer edge
-    if((ax_ref - ax_bbox)>150 or (ax_ref - ax_bbox)<=150):
-        ax_ref = 150 + ax_bbox
+    if((ax_ref - ax_bbox)>100 or (ax_ref - ax_bbox)<=100):
+        ax_ref = 100 + ax_bbox
 
-    if((ay_ref - ay_bbox)>150 or (ay_ref - ay_bbox)<=150):
-        ay_ref = 150 + ay_bbox
+    if((ay_ref - ay_bbox)>100 or (ay_ref - ay_bbox)<=100):
+        ay_ref = 100 + ay_bbox
 
     return RefineBox(
         xC=xC,
